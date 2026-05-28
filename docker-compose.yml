@@ -1,0 +1,155 @@
+# infrastructure/docker-compose.yml
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: blubase
+      POSTGRES_PASSWORD: blubase_secret
+      POSTGRES_DB: blubase_control
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  # --- Blubase Services ---
+  auth-server:
+    build: ../services/auth-server
+    environment:
+      DATABASE_URL: postgres://blubase:blubase_secret@postgres:5432/blubase_control?sslmode=disable
+      REDIS_URL: redis:6379
+      JWT_SECRET: change-me-in-production
+    ports:
+      - "3001:3001"
+    depends_on:
+      - postgres
+      - redis
+
+  project-manager:
+    build: ../services/project-manager
+    environment:
+      DATABASE_URL: postgres://blubase:blubase_secret@postgres:5432/blubase_control?sslmode=disable
+      REDIS_URL: redis:6379
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "3002:3002"
+    depends_on:
+      - postgres
+      - redis
+      - minio
+
+  db-proxy:
+    build: ../services/db-proxy
+    environment:
+      CONTROL_DB: postgres://blubase:blubase_secret@postgres:5432/blubase_control?sslmode=disable
+    ports:
+      - "6543:6543"  # PgBouncer-like proxy
+    depends_on:
+      - postgres
+
+  storage-api:
+    build: ../services/storage
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "3004:3004"
+    depends_on:
+      - minio
+
+  realtime:
+    build: ../services/realtime
+    environment:
+      REDIS_URL: redis:6379
+      DATABASE_URL: postgres://blubase:blubase_secret@postgres:5432/blubase_control?sslmode=disable
+    ports:
+      - "4000:4000"  # WebSocket
+    depends_on:
+      - redis
+      - postgres
+
+  edge-function-manager:
+    build: ../services/edge-functions
+    environment:
+      DATABASE_URL: postgres://blubase:blubase_secret@postgres:5432/blubase_control?sslmode=disable
+      DENO_PATH: /usr/local/bin/deno
+    ports:
+      - "3005:3005"
+      - "8080:8080"  # Edge function invocation port
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # To spawn Firecracker/containers
+    depends_on:
+      - postgres
+
+  ai-assistant:
+    build: ../services/ai-assistant
+    environment:
+      LLM_MODEL_PATH: /models/codellama-7b.Q4_K_M.gguf
+    ports:
+      - "3006:3006"
+    volumes:
+      - ./models:/models
+
+  sql-editor-backend:
+    build: ../services/sql-editor-backend
+    environment:
+      DATABASE_URL: postgres://blubase:blubase_secret@postgres:5432/blubase_control?sslmode=disable
+    ports:
+      - "3007:3007"
+    depends_on:
+      - postgres
+
+  # Observability stack (Prometheus, Grafana, Vector)
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+
+  vector:
+    image: timberio/vector:0.X-alpine
+    volumes:
+      - ./vector.toml:/etc/vector/vector.toml
+    ports:
+      - "8686:8686"
+
+  dashboard:
+    build: ../dashboard
+    ports:
+      - "8085:3000"  # SvelteKit dev mode
+    depends_on:
+      - auth-server
+      - project-manager
+      # ... all others
+
+volumes:
+  pgdata:
+  minio_data:
