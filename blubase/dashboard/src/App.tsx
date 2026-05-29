@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from './lib/stores/storeHelper';
-import { authStore, authActions } from './lib/stores/auth';
+import { authStore } from './lib/stores/auth';
 import { projectStore, projectActions } from './lib/stores/project';
-import { themeStore } from './lib/stores/theme';
-import ToastContainer, { toast } from './lib/components/Toast';
+import ToastContainer from './lib/components/Toast';
 import Sidebar from './lib/components/Sidebar';
 import Navbar from './lib/components/Navbar';
 import AuthViews from './lib/views/AuthViews';
@@ -63,8 +62,8 @@ export default function App() {
       if (!activeProj) return (
         <div className="flex flex-col items-center justify-center p-12 text-center gap-3">
           <h4 className="text-md font-bold text-red-500">Resource pool not found (404)</h4>
-          <p className="text-xs text-slate-400">Project "{activeRef}" not found.</p>
-          <button onClick={() => handleNavigate('/projects')} className="text-xs font-semibold text-indigo-400 underline cursor-pointer">Return to console</button>
+          <p className="text-xs text-zinc-400">Project "{activeRef}" not found.</p>
+          <button onClick={() => handleNavigate('/projects')} className="text-xs font-semibold text-primary underline">Return to console</button>
         </div>
       );
 
@@ -84,24 +83,26 @@ export default function App() {
       }
     }
 
-    return <div className="flex flex-col items-center justify-center p-12"><h4>Resolving routing pipeline...</h4></div>;
+    return <div className="flex items-center justify-center p-12"><p className="text-zinc-500">Loading...</p></div>;
   };
 
   const isAuthPage = currentPath.startsWith('/auth/');
   if (isAuthPage) return (
-    <div className="min-h-screen dark:bg-black bg-zinc-50 dark:text-white text-zinc-900">
+    <div className="min-h-screen bg-white dark:bg-black text-zinc-900 dark:text-zinc-100">
       {renderRouteContent()}
       <ToastContainer />
     </div>
   );
 
   return (
-    <div className="min-h-screen flex text-zinc-800 dark:text-zinc-100 bg-zinc-50 dark:bg-black transition-colors duration-200">
+    <div className="min-h-screen flex bg-zinc-50 dark:bg-black text-zinc-800 dark:text-zinc-100">
       <Sidebar currentPath={currentPath} onNavigate={handleNavigate} activeRef={activeRef} />
-      <div className="flex-1 flex flex-col h-screen overflow-hidden select-none">
-        <Navbar currentPath={currentPath} onNavigate={handleNavigate} activeRef={activeRef} />
-        <main className="flex-1 overflow-y-auto p-6 md:p-8 relative">
-          <div className="max-w-7xl mx-auto h-full">{renderRouteContent()}</div>
+      <div className="flex-1 flex flex-col h-screen overflow-hidden">
+        <Navbar />
+        <main className="flex-1 overflow-y-auto p-6 md:p-8">
+          <div className="max-w-7xl mx-auto h-full">
+            {renderRouteContent()}
+          </div>
         </main>
       </div>
       <ToastContainer />
