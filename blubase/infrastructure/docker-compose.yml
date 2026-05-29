@@ -96,6 +96,12 @@ services:
       MISTRAL_API_KEY: bnXRKcksJSDzVBl6lWYM6LVeL7XKFZ0e
     ports:
       - "3006:3006"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3006/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
   sql-editor-backend:
     build: ../services/sql-editor-backend
     environment:
