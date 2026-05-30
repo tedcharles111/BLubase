@@ -1,0 +1,139 @@
+services:
+  - name: blubase-auth
+    type: web
+    env: docker
+    dockerfilePath: ./services/auth-server/Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          name: blubase-postgres
+          type: pserv
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: blubase-redis
+          type: pserv
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+
+  - name: blubase-projects
+    type: web
+    env: docker
+    dockerfilePath: ./services/project-manager/Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          name: blubase-postgres
+          type: pserv
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: blubase-redis
+          type: pserv
+          property: connectionString
+      - key: MINIO_ENDPOINT
+        value: blubase-minio:9000
+      - key: MINIO_ACCESS_KEY
+        value: minioadmin
+      - key: MINIO_SECRET_KEY
+        value: minioadmin
+      - key: JWT_SECRET
+        fromService:
+          name: blubase-auth
+          type: web
+          property: env.JWT_SECRET
+
+  - name: blubase-sql
+    type: web
+    env: docker
+    dockerfilePath: ./services/sql-editor-backend/Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          name: blubase-postgres
+          type: pserv
+          property: connectionString
+
+  - name: blubase-storage
+    type: web
+    env: docker
+    dockerfilePath: ./services/storage/Dockerfile
+    envVars:
+      - key: MINIO_ENDPOINT
+        value: blubase-minio:9000
+      - key: MINIO_ACCESS_KEY
+        value: minioadmin
+      - key: MINIO_SECRET_KEY
+        value: minioadmin
+
+  - name: blubase-edge
+    type: web
+    env: docker
+    dockerfilePath: ./services/edge-functions/Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          name: blubase-postgres
+          type: pserv
+          property: connectionString
+
+  - name: blubase-ai
+    type: web
+    env: docker
+    dockerfilePath: ./services/ai-assistant/Dockerfile
+    envVars:
+      - key: MISTRAL_API_KEY
+        value: bnXRKcksJSDzVBl6lWYM6LVeL7XKFZ0e
+
+  - name: blubase-realtime
+    type: web
+    env: docker
+    dockerfilePath: ./services/realtime/Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          name: blubase-postgres
+          type: pserv
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: blubase-redis
+          type: pserv
+          property: connectionString
+
+  # Infrastructure
+  - name: blubase-postgres
+    type: pserv
+    env: docker
+    image: postgres:16-alpine
+    disk:
+      name: pgdata
+      mountPath: /var/lib/postgresql/data
+      sizeGB: 1
+    envVars:
+      - key: POSTGRES_USER
+        value: blubase
+      - key: POSTGRES_PASSWORD
+        generateValue: true
+      - key: POSTGRES_DB
+        value: blubase_control
+
+  - name: blubase-redis
+    type: pserv
+    env: docker
+    image: redis:7-alpine
+
+  - name: blubase-minio
+    type: web
+    env: docker
+    dockerfilePath: ./services/minio/Dockerfile
+    disk:
+      name: miniodata
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: MINIO_ROOT_USER
+        value: minioadmin
+      - key: MINIO_ROOT_PASSWORD
+        value: minioadmin
