@@ -9,7 +9,7 @@ COPY services/storage ./storage
 COPY services/sql-editor-backend ./sql-editor-backend
 COPY services/edge-functions ./edge-functions
 
-# Build each service with pinned compatible versions
+# Build auth-server (bcrypt is included in crypto@v0.17.0, no separate get needed)
 RUN cd /build/auth-server && rm -f go.mod go.sum \
  && go mod init auth \
  && go get github.com/go-chi/chi/v5@v5.0.11 \
@@ -18,9 +18,9 @@ RUN cd /build/auth-server && rm -f go.mod go.sum \
  && go get github.com/jackc/pgx/v5@v5.5.5 \
  && go get github.com/redis/go-redis/v9@v9.5.1 \
  && go get golang.org/x/crypto@v0.17.0 \
- && go get golang.org/x/crypto/bcrypt \
  && go mod tidy && go build -o /app/auth-server .
 
+# Build project-manager
 RUN cd /build/project-manager && rm -f go.mod go.sum \
  && go mod init projects \
  && go get github.com/go-chi/chi/v5@v5.0.11 \
@@ -29,21 +29,25 @@ RUN cd /build/project-manager && rm -f go.mod go.sum \
  && go get github.com/minio/minio-go/v7@v7.0.61 \
  && go mod tidy && go build -o /app/project-manager .
 
+# Build db-proxy (no external deps)
 RUN cd /build/db-proxy && rm -f go.mod go.sum \
  && go mod init proxy && go mod tidy && go build -o /app/db-proxy .
 
+# Build storage-api
 RUN cd /build/storage && rm -f go.mod go.sum \
  && go mod init storage \
  && go get github.com/go-chi/chi/v5@v5.0.11 \
  && go get github.com/minio/minio-go/v7@v7.0.61 \
  && go mod tidy && go build -o /app/storage .
 
+# Build sql-editor-backend
 RUN cd /build/sql-editor-backend && rm -f go.mod go.sum \
  && go mod init sql-editor \
  && go get github.com/go-chi/chi/v5@v5.0.11 \
  && go get github.com/jackc/pgx/v5@v5.5.5 \
  && go mod tidy && go build -o /app/sql-editor .
 
+# Build edge-functions
 RUN cd /build/edge-functions && rm -f go.mod go.sum \
  && go mod init edge \
  && go get github.com/go-chi/chi/v5@v5.0.11 \
