@@ -8,40 +8,59 @@ import (
 	"os"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var minioClient *minio.Client
+var db *pgxpool.Pool
 
 func main() {
 	var err error
-	minioClient, err = minio.New(os.Getenv("MINIO_ENDPOINT"), &minio.Options{
-		Creds: credentials.NewStaticV4(os.Getenv("MINIO_ACCESS_KEY"), os.Getenv("MINIO_SECRET_KEY"), ""),
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
+	db, err = pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
+	if err != nil { log.Fatal(err) }
+
+	// Ensure the storage_files table exists
+	_, err = db.Exec(context.Background(), `
+		CREATE TABLE IF NOT EXISTS storage_files (
+			bucket TEXT,
+			filename TEXT,
+			data BYTEA,
+			mime_type TEXT,
+			size BIGINT,
+			PRIMARY KEY (bucket, filename)
+		);
+	`)
+	if err != nil { log.Fatal(err) }
+
 	r := chi.NewRouter()
 	r.Post("/upload/{bucket}/{filename}", uploadHandler)
 	r.Get("/download/{bucket}/{filename}", downloadHandler)
 	r.Delete("/delete/{bucket}/{filename}", deleteHandler)
-	log.Println("Storage API on :3004")
+	log.Println("PostgreSQL Storage API on :3004")
 	log.Fatal(http.ListenAndServe(":3004", r))
 }
 
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
 	filename := chi.URLParam(r, "filename")
-	file, _, err := r.FormFile("file")
+	file, header, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, err.Error(), 400)
+		http.Error(w, "file required", 400)
 		return
 	}
 	defer file.Close()
-	_, err = minioClient.PutObject(context.Background(), bucket, filename, file, -1, minio.PutObjectOptions{})
+	data, err := io.ReadAll(file)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, "read error", 500)
+		return
+	}
+	mime := header.Header.Get("Content-Type")
+	if mime == "" { mime = "application/octet-stream" }
+	_, err = db.Exec(context.Background(),
+		`INSERT INTO storage_files (bucket, filename, data, mime_type, size) VALUES ($1,$2,$3,$4,$5)
+		 ON CONFLICT (bucket, filename) DO UPDATE SET data=$3, mime_type=$4, size=$5`,
+		bucket, filename, data, mime, len(data))
+	if err != nil {
+		http.Error(w, "db error", 500)
 		return
 	}
 	w.Write([]byte("uploaded"))
@@ -50,22 +69,26 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 func downloadHandler(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
 	filename := chi.URLParam(r, "filename")
-	obj, err := minioClient.GetObject(context.Background(), bucket, filename, minio.GetObjectOptions{})
+	var data []byte
+	var mime string
+	err := db.QueryRow(context.Background(),
+		`SELECT data, mime_type FROM storage_files WHERE bucket=$1 AND filename=$2`,
+		bucket, filename).Scan(&data, &mime)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, "not found", 404)
 		return
 	}
-	defer obj.Close()
-	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
-	io.Copy(w, obj)
+	w.Header().Set("Content-Type", mime)
+	w.Write(data)
 }
 
 func deleteHandler(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
 	filename := chi.URLParam(r, "filename")
-	err := minioClient.RemoveObject(context.Background(), bucket, filename, minio.RemoveObjectOptions{})
+	_, err := db.Exec(context.Background(),
+		`DELETE FROM storage_files WHERE bucket=$1 AND filename=$2`, bucket, filename)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, "db error", 500)
 		return
 	}
 	w.Write([]byte("deleted"))
