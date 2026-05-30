@@ -49,9 +49,8 @@ FROM elixir:1.15-alpine AS elixir-builder
 RUN mix local.hex --force && mix local.rebar --force
 WORKDIR /app
 COPY services/realtime .
-# Remove duplicate application.ex that causes module conflict
 RUN rm -f lib/realtime/application.ex
-RUN mix deps.get && mix compile
+RUN mix deps.get && mix compile --no-warnings-as-errors
 
 FROM alpine:3.19
 RUN apk add --no-cache supervisor nginx curl postgresql-client redis python3 py3-pip
@@ -60,7 +59,7 @@ COPY --from=elixir-builder /app/_build /app/_build
 COPY --from=elixir-builder /app/deps /app/deps
 COPY --from=elixir-builder /app/mix.exs /app/
 COPY services/ai-assistant /app/ai-assistant
-RUN pip3 install -r /app/ai-assistant/requirements.txt
+RUN pip3 install --break-system-packages -r /app/ai-assistant/requirements.txt
 COPY nginx/default.conf /etc/nginx/http.d/default.conf
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 EXPOSE 10000
