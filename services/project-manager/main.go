@@ -14,29 +14,22 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 var (
-	controlDB   *pgxpool.Pool
-	minioClient *minio.Client
-	jwtSignKey  = []byte(os.Getenv("JWT_SECRET"))
+	controlDB  *pgxpool.Pool
+	jwtSignKey = []byte(os.Getenv("JWT_SECRET"))
 )
 
 func main() {
 	var err error
 	controlDB, err = pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
 	if err != nil { log.Fatal(err) }
-	minioClient, err = minio.New(os.Getenv("MINIO_ENDPOINT"), &minio.Options{
-		Creds: credentials.NewStaticV4(os.Getenv("MINIO_ACCESS_KEY"), os.Getenv("MINIO_SECRET_KEY"), ""),
-	})
-	if err != nil { log.Fatal(err) }
 
 	r := chi.NewRouter()
 	r.Post("/projects", createProjectHandler)
 	r.Get("/projects", listProjectsHandler)
-	log.Println("Project manager running on :3002")
+	log.Println("Project manager on :3002")
 	log.Fatal(http.ListenAndServe(":3002", r))
 }
 
@@ -57,19 +50,11 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 	})
 	anonKey, _ := anonToken.SignedString(jwtSignKey)
 
-	bucketName := fmt.Sprintf("project-%s", refStr)
-	err := minioClient.MakeBucket(context.Background(), bucketName, minio.MakeBucketOptions{})
-	if err != nil {
-		log.Println("MinIO bucket creation error:", err)
-	}
-
 	var projectID string
-	err = controlDB.QueryRow(context.Background(),
-		`INSERT INTO projects (name, ref, anon_key, bucket_name)
-		 VALUES ($1,$2,$3,$4) RETURNING id`,
-		req.Name, refStr, anonKey, bucketName).Scan(&projectID)
+	err := controlDB.QueryRow(context.Background(),
+		`INSERT INTO projects (name, ref, anon_key) VALUES ($1,$2,$3) RETURNING id`,
+		req.Name, refStr, anonKey).Scan(&projectID)
 	if err != nil {
-		log.Println("Insert error:", err)    // <-- this prints the real reason
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
@@ -87,7 +72,7 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 
 func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := controlDB.Query(context.Background(),
-		`SELECT id, name, ref, anon_key, bucket_name, created_at FROM projects`)
+		`SELECT id, name, ref, anon_key, created_at FROM projects`)
 	if err != nil {
 		json.NewEncoder(w).Encode([]interface{}{})
 		return
@@ -96,9 +81,9 @@ func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var projects []map[string]interface{}
 	for rows.Next() {
-		var id, name, ref, anonKey, bucketName string
+		var id, name, ref, anonKey string
 		var createdAt time.Time
-		rows.Scan(&id, &name, &ref, &anonKey, &bucketName, &createdAt)
+		rows.Scan(&id, &name, &ref, &anonKey, &createdAt)
 		projects = append(projects, map[string]interface{}{
 			"id": id, "name": name, "ref": ref,
 			"anon_key": anonKey, "status": "active", "region": "us-east-1",
