@@ -53,7 +53,7 @@ RUN rm -f lib/realtime/application.ex
 RUN mix deps.get && mix compile --no-warnings-as-errors
 
 FROM alpine:3.19
-RUN apk add --no-cache supervisor nginx curl postgresql-client redis python3 py3-pip
+RUN apk add --no-cache supervisor nginx curl postgresql-client redis python3 py3-pip elixir erlang
 COPY --from=go-builder /app/auth-server /app/project-manager /app/db-proxy /app/storage /app/sql-editor /app/edge-functions /usr/local/bin/
 COPY --from=elixir-builder /app/_build /app/_build
 COPY --from=elixir-builder /app/deps /app/deps
