@@ -1,7 +1,5 @@
 FROM golang:1.24-alpine AS go-builder
 WORKDIR /build
-
-# Copy all service source code
 COPY services/auth-server ./auth-server
 COPY services/project-manager ./project-manager
 COPY services/db-proxy ./db-proxy
@@ -9,7 +7,6 @@ COPY services/storage ./storage
 COPY services/sql-editor-backend ./sql-editor-backend
 COPY services/edge-functions ./edge-functions
 
-# Build auth-server (bcrypt is included in crypto@v0.17.0, no separate get needed)
 RUN cd /build/auth-server && rm -f go.mod go.sum \
  && go mod init auth \
  && go get github.com/go-chi/chi/v5@v5.0.11 \
@@ -20,7 +17,6 @@ RUN cd /build/auth-server && rm -f go.mod go.sum \
  && go get golang.org/x/crypto@v0.17.0 \
  && go mod tidy && go build -o /app/auth-server .
 
-# Build project-manager
 RUN cd /build/project-manager && rm -f go.mod go.sum \
  && go mod init projects \
  && go get github.com/go-chi/chi/v5@v5.0.11 \
@@ -29,25 +25,21 @@ RUN cd /build/project-manager && rm -f go.mod go.sum \
  && go get github.com/minio/minio-go/v7@v7.0.61 \
  && go mod tidy && go build -o /app/project-manager .
 
-# Build db-proxy (no external deps)
 RUN cd /build/db-proxy && rm -f go.mod go.sum \
  && go mod init proxy && go mod tidy && go build -o /app/db-proxy .
 
-# Build storage-api
 RUN cd /build/storage && rm -f go.mod go.sum \
  && go mod init storage \
  && go get github.com/go-chi/chi/v5@v5.0.11 \
  && go get github.com/minio/minio-go/v7@v7.0.61 \
  && go mod tidy && go build -o /app/storage .
 
-# Build sql-editor-backend
 RUN cd /build/sql-editor-backend && rm -f go.mod go.sum \
  && go mod init sql-editor \
  && go get github.com/go-chi/chi/v5@v5.0.11 \
  && go get github.com/jackc/pgx/v5@v5.5.5 \
  && go mod tidy && go build -o /app/sql-editor .
 
-# Build edge-functions
 RUN cd /build/edge-functions && rm -f go.mod go.sum \
  && go mod init edge \
  && go get github.com/go-chi/chi/v5@v5.0.11 \
@@ -57,6 +49,8 @@ FROM elixir:1.15-alpine AS elixir-builder
 RUN mix local.hex --force && mix local.rebar --force
 WORKDIR /app
 COPY services/realtime .
+# Remove duplicate application.ex that causes module conflict
+RUN rm -f lib/realtime/application.ex
 RUN mix deps.get && mix compile
 
 FROM alpine:3.19
