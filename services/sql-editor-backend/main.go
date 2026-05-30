@@ -1,26 +1,47 @@
-// Uses pgx to connect to the target project schema directly.
-// Reads project ref from JWT claims (anon or user token) and sets search_path.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+var pool *pgxpool.Pool
+
+func main() {
+	var err error
+	pool, err = pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	r := chi.NewRouter()
+	r.Get("/sql", runSQLHandler)
+	log.Println("SQL Editor on :3007")
+	log.Fatal(http.ListenAndServe(":3007", r))
+}
+
 func runSQLHandler(w http.ResponseWriter, r *http.Request) {
-    claims := getJWTClaims(r)
-    projectRef := claims["ref"].(string)
-    sqlQuery := r.URL.Query().Get("query")
-
-    // Connect to the actual project database/schema (use same cluster or separate)
-    conn, err := pool.Acquire(context.Background())
-    defer conn.Release()
-    _, err = conn.Exec(context.Background(), fmt.Sprintf("SET search_path TO %s", projectRef))
-    rows, err := conn.Query(context.Background(), sqlQuery)
-    defer rows.Close()
-
-    columns := rows.FieldDescriptions()
-    var results []map[string]interface{}
-    for rows.Next() {
-        values, _ := rows.Values()
-        rowMap := map[string]interface{}{}
-        for i, col := range columns {
-            rowMap[string(col.Name)] = values[i]
-        }
-        results = append(results, rowMap)
-    }
-    json.NewEncoder(w).Encode(results)
+	query := r.URL.Query().Get("query")
+	rows, err := pool.Query(context.Background(), query)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	defer rows.Close()
+	cols := rows.FieldDescriptions()
+	result := []map[string]interface{}{}
+	for rows.Next() {
+		vals, _ := rows.Values()
+		rowMap := map[string]interface{}{}
+		for i, col := range cols {
+			rowMap[string(col.Name)] = vals[i]
+		}
+		result = append(result, rowMap)
+	}
+	json.NewEncoder(w).Encode(result)
 }
