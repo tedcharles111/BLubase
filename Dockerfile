@@ -2,14 +2,16 @@ FROM golang:1.24-alpine AS builder
 WORKDIR /app
 COPY services/ services/
 
-# Auth
+# Auth (pin oauth2 to v0.20.0)
 RUN cd services/auth-server && rm -f go.mod go.sum \
- && go mod init auth && go get github.com/go-chi/chi/v5@v5.0.11 \
+ && go mod init auth \
+ && go get github.com/go-chi/chi/v5@v5.0.11 \
  && go get github.com/go-chi/cors@v1.2.1 \
  && go get github.com/golang-jwt/jwt/v5@v5.2.1 \
  && go get github.com/jackc/pgx/v5@v5.5.5 \
  && go get github.com/redis/go-redis/v9@v9.5.1 \
  && go get golang.org/x/crypto@v0.17.0 \
+ && go get golang.org/x/oauth2@v0.20.0 \
  && go mod tidy && go build -o /app/auth-server .
 
 # Projects
@@ -23,7 +25,7 @@ RUN cd services/project-manager && rm -f go.mod go.sum \
 RUN cd services/db-proxy && rm -f go.mod go.sum \
  && go mod init proxy && go mod tidy && go build -o /app/db-proxy .
 
-# Storage (PostgreSQL based)
+# Storage
 RUN cd services/storage && rm -f go.mod go.sum \
  && go mod init storage && go get github.com/go-chi/chi/v5@v5.0.11 \
  && go get github.com/jackc/pgx/v5@v5.5.5 \
