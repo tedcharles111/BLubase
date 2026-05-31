@@ -73,6 +73,8 @@ func main() {
 
 	// OAuth providers admin
 	r.Get("/admin/oauth-providers", listOAuthProvidersHandler)
+	r.Get("/admin/url-config", getURLConfigHandler)
+	r.Put("/admin/url-config", updateURLConfigHandler)
 	r.Post("/admin/oauth-providers", createOAuthProviderHandler)
 	r.Put("/admin/oauth-providers/{provider}", updateOAuthProviderHandler)
 
@@ -365,4 +367,49 @@ func loadOAuthConfigs() {
 		// add more providers (facebook, figma, etc.) as needed
 		}
 	}
+}
+
+// ----------------------------------------------------------------------
+//  URL Configuration
+// ----------------------------------------------------------------------
+func getURLConfigHandler(w http.ResponseWriter, r *http.Request) {
+	cfg := map[string]interface{}{
+		"site_url":         os.Getenv("RENDER_EXTERNAL_URL"),
+		"jwt_expiry_hours": 24,
+		"redirect_urls":    []string{},
+	}
+	// fetch custom redirect URLs from DB if any
+	rows, _ := dbPool.Query(context.Background(), `SELECT url FROM allowed_redirect_urls`)
+	defer rows.Close()
+	var urls []string
+	for rows.Next() {
+		var u string
+		rows.Scan(&u)
+		urls = append(urls, u)
+	}
+	if urls != nil { cfg["redirect_urls"] = urls }
+	json.NewEncoder(w).Encode(cfg)
+}
+
+func updateURLConfigHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SiteURL        string   `json:"site_url"`
+		JWTExpiryHours int      `json:"jwt_expiry_hours"`
+		RedirectURLs   []string `json:"redirect_urls"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	if req.SiteURL != "" {
+		os.Setenv("RENDER_EXTERNAL_URL", req.SiteURL)
+	}
+	if req.JWTExpiryHours > 0 {
+		// store in Redis or config table (simplified: just acknowledge)
+	}
+	if req.RedirectURLs != nil {
+		dbPool.Exec(context.Background(), `DELETE FROM allowed_redirect_urls`)
+		for _, u := range req.RedirectURLs {
+			dbPool.Exec(context.Background(), `INSERT INTO allowed_redirect_urls (url) VALUES ($1)`, u)
+		}
+	}
+	w.Write([]byte(`{"status":"updated"}`))
 }
