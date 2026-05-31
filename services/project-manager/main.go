@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -32,14 +34,35 @@ func main() {
 	log.Fatal(http.ListenAndServe(":3002", r))
 }
 
+func extractUserID(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return ""
+	}
+	tokenStr := strings.TrimPrefix(auth, "Bearer ")
+	claims := jwt.MapClaims{}
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+		return jwtSignKey, nil
+	})
+	if err != nil {
+		return ""
+	}
+	sub, _ := claims["sub"].(string)
+	return sub
+}
+
 func createProjectHandler(w http.ResponseWriter, r *http.Request) {
+	userID := extractUserID(r)
+	if userID == "" {
+		http.Error(w, `{"error":"unauthorized"}`, 401)
+		return
+	}
 	var req struct{ Name string }
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Name == "" {
 		http.Error(w, `{"error":"name required"}`, 400)
 		return
 	}
-
 	ref := make([]byte, 6)
 	rand.Read(ref)
 	refStr := base64.URLEncoding.EncodeToString(ref)[:6]
@@ -51,33 +74,31 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 
 	var projectID string
 	err := controlDB.QueryRow(context.Background(),
-		`INSERT INTO projects (name, ref, anon_key) VALUES ($1,$2,$3) RETURNING id`,
-		req.Name, refStr, anonKey).Scan(&projectID)
+		`INSERT INTO projects (name, ref, owner_id, anon_key) VALUES ($1,$2,$3,$4) RETURNING id`,
+		req.Name, refStr, userID, anonKey).Scan(&projectID)
 	if err != nil {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":       projectID,
-		"name":     req.Name,
-		"ref":      refStr,
-		"anon_key": anonKey,
-		"status":   "active",
-		"region":   "us-east-1",
+		"id": projectID, "name": req.Name, "ref": refStr,
+		"anon_key": anonKey, "status": "active", "region": "us-east-1",
 	})
 }
 
 func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
+	userID := extractUserID(r)
+	if userID == "" {
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
+	}
 	rows, err := controlDB.Query(context.Background(),
-		`SELECT id, name, ref, anon_key, created_at FROM projects`)
+		`SELECT id, name, ref, anon_key, created_at FROM projects WHERE owner_id=$1`, userID)
 	if err != nil {
 		json.NewEncoder(w).Encode([]interface{}{})
 		return
 	}
 	defer rows.Close()
-
 	var projects []map[string]interface{}
 	for rows.Next() {
 		var id, name, ref, anonKey string
