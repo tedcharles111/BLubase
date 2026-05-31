@@ -346,7 +346,7 @@ func loadOAuthConfigs() {
 		var p, cid, csecret string
 		var en bool
 		rows.Scan(&p, &cid, &csecret, &en)
-		redirectURL := fmt.Sprintf("%s/auth/%s/callback", os.Getenv("API_BASE_URL"), p)
+		redirectURL := fmt.Sprintf("%s/auth/%s/callback", os.Getenv("RENDER_EXTERNAL_URL"), p)
 		switch p {
 		case "github":
 			oauthConfigs[p] = &oauth2.Config{
