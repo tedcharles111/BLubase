@@ -98,7 +98,7 @@ func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	var projects []map[string]interface{}
+	projects := []map[string]interface{}{}
 	for rows.Next() {
 		var id, name, ref, anonKey string
 		var createdAt time.Time
