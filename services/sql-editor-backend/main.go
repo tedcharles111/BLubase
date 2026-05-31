@@ -78,7 +78,7 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := pool.Query(context.Background(),
 		`SELECT query, created_at FROM sql_history WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
 	defer rows.Close()
-	var history []map[string]interface{}
+	history := []map[string]interface{}{}
 	for rows.Next() {
 		var query string
 		var createdAt time.Time
