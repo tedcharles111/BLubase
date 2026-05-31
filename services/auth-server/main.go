@@ -98,7 +98,7 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	_, err := dbPool.Exec(context.Background(),
-		`INSERT INTO users (email, password_hash) VALUES ($1,$2) ON CONFLICT (email) DO NOTHING`,
+		_, err = dbPool.Exec(context.Background(),`INSERT INTO users (email, password_hash, phone) VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING`,req.Email, string(hashed), req.Phone)
 		req.Email, string(hashed))
 	if err != nil {
 		http.Error(w, `{"error":"database error"}`, 500)
