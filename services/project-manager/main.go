@@ -29,23 +29,20 @@ func main() {
 	r := chi.NewRouter()
 	r.Post("/projects", createProjectHandler)
 	r.Get("/projects", listProjectsHandler)
+	r.Get("/schema", schemaVisualizerHandler)  // new
 	log.Println("Project manager on :3002")
 	log.Fatal(http.ListenAndServe(":3002", r))
 }
 
 func extractUserID(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return ""
-	}
+	if !strings.HasPrefix(auth, "Bearer ") { return "" }
 	tokenStr := strings.TrimPrefix(auth, "Bearer ")
 	claims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 		return jwtSignKey, nil
 	})
-	if err != nil {
-		return ""
-	}
+	if err != nil { return "" }
 	sub, _ := claims["sub"].(string)
 	return sub
 }
@@ -65,12 +62,10 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 	ref := make([]byte, 6)
 	rand.Read(ref)
 	refStr := base64.URLEncoding.EncodeToString(ref)[:6]
-
 	anonToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"ref": refStr, "role": "anon", "iat": time.Now().Unix(),
 	})
 	anonKey, _ := anonToken.SignedString(jwtSignKey)
-
 	var projectID string
 	err := controlDB.QueryRow(context.Background(),
 		`INSERT INTO projects (name, ref, owner_id, anon_key) VALUES ($1,$2,$3,$4) RETURNING id`,
@@ -110,4 +105,25 @@ func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	json.NewEncoder(w).Encode(projects)
+}
+
+func schemaVisualizerHandler(w http.ResponseWriter, r *http.Request) {
+	rows, err := controlDB.Query(context.Background(),
+		`SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema='public' ORDER BY table_name, ordinal_position`)
+	if err != nil {
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
+	}
+	defer rows.Close()
+	type Col struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	schema := map[string][]Col{}
+	for rows.Next() {
+		var t, c, d string
+		rows.Scan(&t, &c, &d)
+		schema[t] = append(schema[t], Col{Name: c, Type: d})
+	}
+	json.NewEncoder(w).Encode(schema)
 }
