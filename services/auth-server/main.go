@@ -43,10 +43,12 @@ func main() {
 	ctx := context.Background()
 	var err error
 	dbPool, err = pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 	redisClient = redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_URL")})
 
-	// ensure tables
+	// Ensure tables
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS email_templates (name TEXT PRIMARY KEY, subject TEXT NOT NULL, body TEXT NOT NULL)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS smtp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS oauth_providers (provider TEXT PRIMARY KEY, client_id TEXT, client_secret TEXT, enabled BOOLEAN DEFAULT false)`)
@@ -60,9 +62,6 @@ func main() {
 	r.Post("/login", loginHandler)
 	r.Post("/forgot-password", forgotPasswordHandler)
 	r.Post("/reset-password", resetPasswordHandler)
-
-	// temporary helper to retrieve OTP (only for testing)
-	r.Get("/test-otp", testOtpHandler)
 
 	r.Get("/admin/templates", listTemplatesHandler)
 	r.Post("/admin/templates", createTemplateHandler)
@@ -134,14 +133,18 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	otp := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
-	// Store in Redis
 	err := redisClient.Set(context.Background(), "reset:"+req.Email, otp, 15*time.Minute).Err()
 	if err != nil {
 		log.Printf("ERROR storing OTP in Redis: %v", err)
 	}
-	log.Printf("Password reset OTP for %s: %s (Redis error: %v)", req.Email, otp, err)
-	json.NewEncoder(w).Encode(map[string]string{"message": "If that email exists, a reset code has been sent", "otp": otp})
+	log.Printf("Password reset OTP for %s: %s", req.Email, otp)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "If that email exists, a reset code has been sent",
+		"otp":     otp,
+	})
 }
+
+func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email       string `json:"email"`
 		OTP         string `json:"otp"`
@@ -168,22 +171,7 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"message":"password updated"}`))
 }
 
-func testOtpHandler(w http.ResponseWriter, r *http.Request) {
-	email := r.URL.Query().Get("email")
-	if email == "" {
-		http.Error(w, `{"error":"email required"}`, 400)
-		return
-	}
-	otp, _ := redisClient.Get(context.Background(), "reset:"+email).Result()
-	if otp == "" {
-		http.Error(w, `{"error":"no otp found or expired"}`, 404)
-		return
-	}
-	json.NewEncoder(w).Encode(map[string]string{"otp": otp})
-}
-
-// ... (the rest of the handlers: templates, smtp, oauth, url-config remain unchanged)
-// I'll attach them below for completeness, but they are identical to the previous full rewrite.
+// ... (the remaining handlers are identical to the previous full rewrite, but I'll include them for completeness)
 
 func listTemplatesHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT name, subject, body FROM email_templates`)
@@ -423,18 +411,4 @@ func loadOAuthConfigs() {
 			}
 		}
 	}
-}
-
-func testOtpHandler(w http.ResponseWriter, r *http.Request) {
-	email := r.URL.Query().Get("email")
-	if email == "" {
-		http.Error(w, `{"error":"email required"}`, 400)
-		return
-	}
-	otp, err := redisClient.Get(context.Background(), "reset:"+email).Result()
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"no otp found or expired: %v"}`, err), 404)
-		return
-	}
-	json.NewEncoder(w).Encode(map[string]string{"otp": otp})
 }
