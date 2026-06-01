@@ -31,8 +31,9 @@ RUN cd services/sql-editor-backend && rm -f go.mod go.sum \
  && go get github.com/jackc/pgx/v5@v5.5.5 \
  && go mod tidy && go build -o /app/sql-editor .
 
-RUN cd services/edge-functions && rm -f go.mod go.sum \
- && go mod init edge && go get github.com/go-chi/chi/v5@v5.0.11 \
+RUN cd services/edge-functions && rm -f go.mod go.sum 
+ && go mod init edge && go get github.com/go-chi/chi/v5@v5.0.11 
+ && go get github.com/jackc/pgx/v5@v5.5.5 
  && go mod tidy && go build -o /app/edge-functions .
 
 FROM alpine:3.19
