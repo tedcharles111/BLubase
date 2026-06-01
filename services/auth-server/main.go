@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/big"
 	"net/http"
 	"os"
 	"time"
@@ -44,7 +43,9 @@ func main() {
 	ctx := context.Background()
 	var err error
 	dbPool, err = pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 	redisClient = redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_URL")})
 
 	// Ensure tables
@@ -52,37 +53,33 @@ func main() {
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS smtp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS oauth_providers (provider TEXT PRIMARY KEY, client_id TEXT, client_secret TEXT, enabled BOOLEAN DEFAULT false)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS allowed_redirect_urls (url TEXT PRIMARY KEY)`)
-	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS password_reset_tokens (email TEXT PRIMARY KEY, token TEXT, expires_at TIMESTAMPTZ)`)
 
 	loadOAuthConfigs()
 
 	r := chi.NewRouter()
 
-	// Auth
+	// Auth endpoints
 	r.Post("/signup", signupHandler)
 	r.Post("/login", loginHandler)
 	r.Post("/forgot-password", forgotPasswordHandler)
 	r.Post("/reset-password", resetPasswordHandler)
 
-	// Password recovery
-	r.Post("/forgot-password", forgotPasswordHandler)
-	r.Post("/reset-password", resetPasswordHandler)
-	r.Post("/send-otp", sendOTPHandler)
-	r.Post("/verify-otp", verifyOTPHandler)
-
-	// Admin
+	// Admin endpoints
 	r.Get("/admin/templates", listTemplatesHandler)
 	r.Post("/admin/templates", createTemplateHandler)
 	r.Delete("/admin/templates/{name}", deleteTemplateHandler)
+
 	r.Get("/admin/smtp", getSMTPHandler)
 	r.Put("/admin/smtp", updateSMTPHandler)
+
 	r.Get("/admin/oauth-providers", listOAuthProvidersHandler)
 	r.Post("/admin/oauth-providers", createOAuthProviderHandler)
 	r.Put("/admin/oauth-providers/{provider}", updateOAuthProviderHandler)
+
 	r.Get("/admin/url-config", getURLConfigHandler)
 	r.Put("/admin/url-config", updateURLConfigHandler)
 
-	// OAuth login
+	// OAuth flow
 	r.Get("/auth/{provider}/login", oauthLoginHandler)
 	r.Get("/auth/{provider}/callback", oauthCallbackHandler)
 
@@ -90,9 +87,10 @@ func main() {
 	log.Fatal(http.ListenAndServe(":3001", r))
 }
 
-// ----------------------------------------------------------------------
-//  Auth Handlers
-// ----------------------------------------------------------------------
+// -------------------------------
+//   Auth Handlers
+// -------------------------------
+
 func signupHandler(w http.ResponseWriter, r *http.Request) {
 	var req SignupRequest
 	json.NewDecoder(r.Body).Decode(&req)
@@ -134,9 +132,6 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
 }
 
-// ----------------------------------------------------------------------
-//  Password Recovery
-// ----------------------------------------------------------------------
 func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Email string }
 	json.NewDecoder(r.Body).Decode(&req)
@@ -144,89 +139,39 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"email required"}`, 400)
 		return
 	}
-	var exists bool
-	dbPool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM users WHERE email=$1)`, req.Email).Scan(&exists)
-	if !exists {
-		w.Write([]byte(`{"message":"If that email exists, a reset link has been sent."}`))
-		return
-	}
-	tokenBytes := make([]byte, 32)
-	rand.Read(tokenBytes)
-	token := base64.URLEncoding.EncodeToString(tokenBytes)
-	dbPool.Exec(context.Background(),
-		`INSERT INTO password_reset_tokens (email, token, expires_at) VALUES ($1,$2,$3) ON CONFLICT (email) DO UPDATE SET token=$2, expires_at=$3`,
-		req.Email, token, time.Now().Add(15*time.Minute))
-
-	// In production, send email via SMTP. For now, return the token in the response.
-	link := fmt.Sprintf("%s/auth/reset-password?token=%s", os.Getenv("RENDER_EXTERNAL_URL"), token)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"message": "Reset link generated.",
-		"reset_link": link,
-	})
+	otp := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
+	redisClient.Set(context.Background(), "reset:"+req.Email, otp, 15*time.Minute)
+	log.Printf("Password reset OTP for %s: %s", req.Email, otp)
+	w.Write([]byte(`{"message":"If that email exists, a reset code has been sent"}`))
 }
 
 func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Token, NewPassword string }
+	var req struct{ Email, OTP, NewPassword string }
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Token == "" || req.NewPassword == "" {
-		http.Error(w, `{"error":"token and new_password required"}`, 400)
+	if req.Email == "" || req.OTP == "" || req.NewPassword == "" {
+		http.Error(w, `{"error":"email, otp, new_password required"}`, 400)
 		return
 	}
-	var email string
-	var expiresAt time.Time
-	err := dbPool.QueryRow(context.Background(),
-		`SELECT email, expires_at FROM password_reset_tokens WHERE token=$1`, req.Token).Scan(&email, &expiresAt)
-	if err != nil || time.Now().After(expiresAt) {
-		http.Error(w, `{"error":"invalid or expired token"}`, 400)
+	stored, _ := redisClient.Get(context.Background(), "reset:"+req.Email).Result()
+	if stored != req.OTP {
+		http.Error(w, `{"error":"invalid otp"}`, 401)
 		return
 	}
+	redisClient.Del(context.Background(), "reset:"+req.Email)
 	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
-	dbPool.Exec(context.Background(), `UPDATE users SET password_hash=$1 WHERE email=$2`, string(hashed), email)
-	dbPool.Exec(context.Background(), `DELETE FROM password_reset_tokens WHERE email=$1`, email)
-	w.Write([]byte(`{"message":"Password updated successfully."}`))
-}
-
-func sendOTPHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Email string }
-	json.NewDecoder(r.Body).Decode(&req)
-	if req.Email == "" {
-		http.Error(w, `{"error":"email required"}`, 400)
+	_, err := dbPool.Exec(context.Background(),
+		`UPDATE users SET password_hash=$1 WHERE email=$2`, string(hashed), req.Email)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
-	otp, _ := rand.Int(rand.Reader, big.NewInt(900000))
-	otpStr := fmt.Sprintf("%06d", otp.Int64()+100000)
-	redisClient.Set(context.Background(), "otp:"+req.Email, otpStr, 5*time.Minute)
-
-	// In production, send via email/SMS. Return it for now.
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"message": "OTP generated.",
-		"otp": otpStr,
-	})
+	w.Write([]byte(`{"message":"password updated"}`))
 }
 
-func verifyOTPHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Email, OTP string }
-	json.NewDecoder(r.Body).Decode(&req)
-	if req.Email == "" || req.OTP == "" {
-		http.Error(w, `{"error":"email and otp required"}`, 400)
-		return
-	}
-	stored, err := redisClient.Get(context.Background(), "otp:"+req.Email).Result()
-	if err != nil || stored != req.OTP {
-		http.Error(w, `{"error":"invalid or expired OTP"}`, 400)
-		return
-	}
-	redisClient.Del(context.Background(), "otp:"+req.Email)
-	// Generate a temporary JWT
-	claims := jwt.MapClaims{"email": req.Email, "purpose": "otp_login", "exp": time.Now().Add(5*time.Minute).Unix()}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, _ := token.SignedString(jwtSecret)
-	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "message": "OTP verified."})
-}
+// -------------------------------
+//   Email Templates
+// -------------------------------
 
-// ----------------------------------------------------------------------
-//  Email Templates / SMTP / OAuth / URL Config
-// ----------------------------------------------------------------------
 func listTemplatesHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT name, subject, body FROM email_templates`)
 	defer rows.Close()
@@ -258,6 +203,10 @@ func deleteTemplateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"deleted"}`))
 }
 
+// -------------------------------
+//   SMTP Config
+// -------------------------------
+
 func getSMTPHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT key, value FROM smtp_config`)
 	defer rows.Close()
@@ -279,6 +228,10 @@ func updateSMTPHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Write([]byte(`{"status":"updated"}`))
 }
+
+// -------------------------------
+//   OAuth Providers
+// -------------------------------
 
 func listOAuthProvidersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT provider, client_id, client_secret, enabled FROM oauth_providers`)
@@ -402,6 +355,10 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
 }
 
+// -------------------------------
+//   URL Configuration
+// -------------------------------
+
 func getURLConfigHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := map[string]interface{}{
 		"site_url":         os.Getenv("RENDER_EXTERNAL_URL"),
@@ -439,6 +396,10 @@ func updateURLConfigHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"updated"}`))
 }
 
+// -------------------------------
+//   Helpers
+// -------------------------------
+
 func loadOAuthConfigs() {
 	rows, _ := dbPool.Query(context.Background(),
 		`SELECT provider, client_id, client_secret, enabled FROM oauth_providers WHERE enabled=true`)
@@ -465,42 +426,4 @@ func loadOAuthConfigs() {
 			}
 		}
 	}
-}
-
-func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Email string }
-	json.NewDecoder(r.Body).Decode(&req)
-	if req.Email == "" {
-		http.Error(w, `{"error":"email required"}`, 400)
-		return
-	}
-	// Generate OTP
-	otp := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
-	redisClient.Set(context.Background(), "reset:"+req.Email, otp, 15*time.Minute)
-	// In production, send email via SMTP; here we just log it
-	log.Printf("Password reset OTP for %s: %s", req.Email, otp)
-	w.Write([]byte(`{"message":"If that email exists, a reset code has been sent"}`))
-}
-
-func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Email, OTP, NewPassword string }
-	json.NewDecoder(r.Body).Decode(&req)
-	if req.Email == "" || req.OTP == "" || req.NewPassword == "" {
-		http.Error(w, `{"error":"email, otp, new_password required"}`, 400)
-		return
-	}
-	stored, _ := redisClient.Get(context.Background(), "reset:"+req.Email).Result()
-	if stored != req.OTP {
-		http.Error(w, `{"error":"invalid otp"}`, 401)
-		return
-	}
-	redisClient.Del(context.Background(), "reset:"+req.Email)
-	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
-	_, err := dbPool.Exec(context.Background(),
-		`UPDATE users SET password_hash=$1 WHERE email=$2`, string(hashed), req.Email)
-	if err != nil {
-		http.Error(w, `{"error":"database error"}`, 500)
-		return
-	}
-	w.Write([]byte(`{"message":"password updated"}`))
 }
