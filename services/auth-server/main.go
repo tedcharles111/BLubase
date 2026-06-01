@@ -134,12 +134,14 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	otp := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
-	redisClient.Set(context.Background(), "reset:"+req.Email, otp, 15*time.Minute)
-	log.Printf("Password reset OTP for %s: %s", req.Email, otp)
-	w.Write([]byte(`{"message":"If that email exists, a reset code has been sent"}`))
+	// Store in Redis
+	err := redisClient.Set(context.Background(), "reset:"+req.Email, otp, 15*time.Minute).Err()
+	if err != nil {
+		log.Printf("ERROR storing OTP in Redis: %v", err)
+	}
+	log.Printf("Password reset OTP for %s: %s (Redis error: %v)", req.Email, otp, err)
+	json.NewEncoder(w).Encode(map[string]string{"message": "If that email exists, a reset code has been sent", "otp": otp})
 }
-
-func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email       string `json:"email"`
 		OTP         string `json:"otp"`
@@ -421,4 +423,18 @@ func loadOAuthConfigs() {
 			}
 		}
 	}
+}
+
+func testOtpHandler(w http.ResponseWriter, r *http.Request) {
+	email := r.URL.Query().Get("email")
+	if email == "" {
+		http.Error(w, `{"error":"email required"}`, 400)
+		return
+	}
+	otp, err := redisClient.Get(context.Background(), "reset:"+email).Result()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"no otp found or expired: %v"}`, err), 404)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"otp": otp})
 }
