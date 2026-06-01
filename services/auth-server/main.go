@@ -48,11 +48,18 @@ func main() {
 	}
 	redisClient = redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_URL")})
 
-	// Ensure tables
+	// Ensure tables (including activity_log)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS email_templates (name TEXT PRIMARY KEY, subject TEXT NOT NULL, body TEXT NOT NULL)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS smtp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS oauth_providers (provider TEXT PRIMARY KEY, client_id TEXT, client_secret TEXT, enabled BOOLEAN DEFAULT false)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS allowed_redirect_urls (url TEXT PRIMARY KEY)`)
+	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS activity_log (
+		id SERIAL PRIMARY KEY,
+		user_id TEXT,
+		action TEXT,
+		details TEXT,
+		created_at TIMESTAMPTZ DEFAULT now()
+	)`)
 
 	loadOAuthConfigs()
 
@@ -62,6 +69,10 @@ func main() {
 	r.Post("/login", loginHandler)
 	r.Post("/forgot-password", forgotPasswordHandler)
 	r.Post("/reset-password", resetPasswordHandler)
+
+	// Activity log endpoints
+	r.Post("/activity", logActivityHandler)
+	r.Get("/activity", listActivityHandler)
 
 	r.Get("/admin/templates", listTemplatesHandler)
 	r.Post("/admin/templates", createTemplateHandler)
@@ -84,6 +95,7 @@ func main() {
 	log.Fatal(http.ListenAndServe(":3001", r))
 }
 
+// ---------- Auth Handlers ----------
 func signupHandler(w http.ResponseWriter, r *http.Request) {
 	var req SignupRequest
 	json.NewDecoder(r.Body).Decode(&req)
@@ -99,6 +111,8 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
+	// Log activity
+	logActivity(r, "signup", req.Email)
 	w.Write([]byte(`{"message":"signup successful"}`))
 }
 
@@ -122,6 +136,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := token.SignedString(jwtSecret)
+	logActivity(r, "login", req.Email)
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
 }
 
@@ -137,7 +152,7 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("ERROR storing OTP in Redis: %v", err)
 	}
-	log.Printf("Password reset OTP for %s: %s", req.Email, otp)
+	logActivity(r, "forgot_password", req.Email)
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "If that email exists, a reset code has been sent",
 		"otp":     otp,
@@ -168,11 +183,72 @@ func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
+	logActivity(r, "reset_password", req.Email)
 	w.Write([]byte(`{"message":"password updated"}`))
 }
 
-// ... (the remaining handlers are identical to the previous full rewrite, but I'll include them for completeness)
+// ---------- Activity Log Helpers ----------
+func extractUserID(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if len(auth) < 8 || auth[:7] != "Bearer " {
+		return "anonymous"
+	}
+	tokenStr := auth[7:]
+	claims := jwt.MapClaims{}
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+	if err != nil {
+		return "anonymous"
+	}
+	sub, _ := claims["sub"].(string)
+	return sub
+}
 
+func logActivity(r *http.Request, action, details string) {
+	userID := extractUserID(r)
+	dbPool.Exec(context.Background(),
+		`INSERT INTO activity_log (user_id, action, details) VALUES ($1,$2,$3)`,
+		userID, action, details)
+}
+
+func logActivityHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Action  string `json:"action"`
+		Details string `json:"details"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Action == "" {
+		http.Error(w, `{"error":"action required"}`, 400)
+		return
+	}
+	logActivity(r, req.Action, req.Details)
+	w.Write([]byte(`{"status":"logged"}`))
+}
+
+func listActivityHandler(w http.ResponseWriter, r *http.Request) {
+	userID := extractUserID(r)
+	limit := r.URL.Query().Get("limit")
+	if limit == "" {
+		limit = "50"
+	}
+	rows, _ := dbPool.Query(context.Background(),
+		`SELECT action, details, created_at FROM activity_log WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`,
+		userID, limit)
+	defer rows.Close()
+	var activities []map[string]interface{}
+	for rows.Next() {
+		var action, details string
+		var createdAt time.Time
+		rows.Scan(&action, &details, &createdAt)
+		activities = append(activities, map[string]interface{}{
+			"action": action, "details": details, "created_at": createdAt,
+		})
+	}
+	json.NewEncoder(w).Encode(activities)
+}
+
+// ---------- Email Templates ----------
 func listTemplatesHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT name, subject, body FROM email_templates`)
 	defer rows.Close()
@@ -204,6 +280,7 @@ func deleteTemplateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"deleted"}`))
 }
 
+// ---------- SMTP Config ----------
 func getSMTPHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT key, value FROM smtp_config`)
 	defer rows.Close()
@@ -226,6 +303,7 @@ func updateSMTPHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"updated"}`))
 }
 
+// ---------- OAuth Providers ----------
 func listOAuthProvidersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT provider, client_id, client_secret, enabled FROM oauth_providers`)
 	defer rows.Close()
@@ -270,6 +348,7 @@ func updateOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"updated"}`))
 }
 
+// ---------- OAuth Login/Callback ----------
 func oauthLoginHandler(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
 	config, ok := oauthConfigs[provider]
@@ -348,6 +427,7 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
 }
 
+// ---------- URL Configuration ----------
 func getURLConfigHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := map[string]interface{}{
 		"site_url":         os.Getenv("RENDER_EXTERNAL_URL"),
@@ -385,6 +465,7 @@ func updateURLConfigHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"updated"}`))
 }
 
+// ---------- OAuth Config Loader ----------
 func loadOAuthConfigs() {
 	rows, _ := dbPool.Query(context.Background(),
 		`SELECT provider, client_id, client_secret, enabled FROM oauth_providers WHERE enabled=true`)
