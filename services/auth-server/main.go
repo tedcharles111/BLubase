@@ -61,6 +61,8 @@ func main() {
 	// Auth
 	r.Post("/signup", signupHandler)
 	r.Post("/login", loginHandler)
+	r.Post("/forgot-password", forgotPasswordHandler)
+	r.Post("/reset-password", resetPasswordHandler)
 
 	// Password recovery
 	r.Post("/forgot-password", forgotPasswordHandler)
@@ -463,4 +465,42 @@ func loadOAuthConfigs() {
 			}
 		}
 	}
+}
+
+func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Email string }
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Email == "" {
+		http.Error(w, `{"error":"email required"}`, 400)
+		return
+	}
+	// Generate OTP
+	otp := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
+	redisClient.Set(context.Background(), "reset:"+req.Email, otp, 15*time.Minute)
+	// In production, send email via SMTP; here we just log it
+	log.Printf("Password reset OTP for %s: %s", req.Email, otp)
+	w.Write([]byte(`{"message":"If that email exists, a reset code has been sent"}`))
+}
+
+func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Email, OTP, NewPassword string }
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Email == "" || req.OTP == "" || req.NewPassword == "" {
+		http.Error(w, `{"error":"email, otp, new_password required"}`, 400)
+		return
+	}
+	stored, _ := redisClient.Get(context.Background(), "reset:"+req.Email).Result()
+	if stored != req.OTP {
+		http.Error(w, `{"error":"invalid otp"}`, 401)
+		return
+	}
+	redisClient.Del(context.Background(), "reset:"+req.Email)
+	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	_, err := dbPool.Exec(context.Background(),
+		`UPDATE users SET password_hash=$1 WHERE email=$2`, string(hashed), req.Email)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+	w.Write([]byte(`{"message":"password updated"}`))
 }
