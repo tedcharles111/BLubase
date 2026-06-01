@@ -44,19 +44,26 @@ ENDPOINTS = {
 async def execute_tool(name, args, token):
     if name == "help_user":
         return {"answer": args["message"]}
+    if name not in ENDPOINTS:
+        return {"error": f"unknown tool {name}"}
     port, method, path = ENDPOINTS[name]
     url = f"http://127.0.0.1:{port}{path}"
     if "{query}" in url:
-        url = url.replace("{query}", urllib.parse.quote(args["query"]))
+        url = url.replace("{query}", urllib.parse.quote(args.get("query", "")))
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    async with httpx.AsyncClient(timeout=10) as c:
-        if method == "GET":
-            r = await c.get(url, headers=headers)
-        elif method == "POST":
-            r = await c.post(url, json=args, headers=headers)
-        elif method == "PUT":
-            r = await c.put(url, json=args, headers=headers)
-        return r.json() if r.status_code == 200 else {"error": r.text}
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            if method == "GET":
+                r = await c.get(url, headers=headers)
+            elif method == "POST":
+                r = await c.post(url, json=args, headers=headers)
+            elif method == "PUT":
+                r = await c.put(url, json=args, headers=headers)
+            else:
+                return {"error": f"unsupported method {method}"}
+            return r.json() if r.status_code == 200 else {"error": r.text}
+    except Exception as e:
+        return {"error": f"connection failed: {str(e)}"}
 
 @app.post("/assist")
 async def assist(request: Request):
@@ -73,18 +80,21 @@ async def assist(request: Request):
         "tool_choice": "auto",
         "temperature": 0.2
     }
-    async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.post(MISTRAL_URL, json=payload,
-                         headers={"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"})
-        r.raise_for_status()
-        msg = r.json()["choices"][0]["message"]
-        if "tool_calls" in msg and msg["tool_calls"]:
-            tc = msg["tool_calls"][0]
-            fname = tc["function"]["name"]
-            fargs = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
-            result = await execute_tool(fname, fargs, token)
-            return {"answer": json.dumps(result, indent=2), "action": fname}
-        return {"answer": msg.get("content", "I'm not sure how to help.")}
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(MISTRAL_URL, json=payload,
+                             headers={"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"})
+            r.raise_for_status()
+            msg = r.json()["choices"][0]["message"]
+            if "tool_calls" in msg and msg["tool_calls"]:
+                tc = msg["tool_calls"][0]
+                fname = tc["function"]["name"]
+                fargs = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
+                result = await execute_tool(fname, fargs, token)
+                return {"answer": json.dumps(result, indent=2), "action": fname}
+            return {"answer": msg.get("content", "I'm not sure how to help.")}
+    except Exception as e:
+        return {"answer": f"Agent error: {str(e)}"}
 
 @app.get("/health")
 def health():
