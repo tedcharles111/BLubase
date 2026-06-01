@@ -2,6 +2,7 @@ FROM golang:1.24-alpine AS builder
 WORKDIR /app
 COPY services/ services/
 
+# Auth
 RUN cd services/auth-server && rm -f go.mod go.sum \
  && go mod init auth && go get github.com/go-chi/chi/v5@v5.0.11 \
  && go get github.com/go-chi/cors@v1.2.1 \
@@ -12,32 +13,37 @@ RUN cd services/auth-server && rm -f go.mod go.sum \
  && go get golang.org/x/oauth2@v0.20.0 \
  && go mod tidy && go build -o /app/auth-server .
 
+# Projects
 RUN cd services/project-manager && rm -f go.mod go.sum \
  && go mod init projects && go get github.com/go-chi/chi/v5@v5.0.11 \
  && go get github.com/golang-jwt/jwt/v5@v5.2.1 \
  && go get github.com/jackc/pgx/v5@v5.5.5 \
  && go mod tidy && go build -o /app/project-manager .
 
+# DB Proxy
 RUN cd services/db-proxy && rm -f go.mod go.sum \
  && go mod init proxy && go mod tidy && go build -o /app/db-proxy .
 
+# Storage
 RUN cd services/storage && rm -f go.mod go.sum \
  && go mod init storage && go get github.com/go-chi/chi/v5@v5.0.11 \
  && go get github.com/jackc/pgx/v5@v5.5.5 \
  && go mod tidy && go build -o /app/storage .
 
+# SQL Editor
 RUN cd services/sql-editor-backend && rm -f go.mod go.sum \
  && go mod init sql-editor && go get github.com/go-chi/chi/v5@v5.0.11 \
  && go get github.com/jackc/pgx/v5@v5.5.5 \
  && go mod tidy && go build -o /app/sql-editor .
 
-RUN cd services/edge-functions && rm -f go.mod go.sum 
- && go mod init edge && go get github.com/go-chi/chi/v5@v5.0.11 
- && go get github.com/jackc/pgx/v5@v5.5.5 
+# Edge Functions
+RUN cd services/edge-functions && rm -f go.mod go.sum \
+ && go mod init edge && go get github.com/go-chi/chi/v5@v5.0.11 \
+ && go get github.com/jackc/pgx/v5@v5.5.5 \
  && go mod tidy && go build -o /app/edge-functions .
 
 FROM alpine:3.19
-RUN apk add --no-cache supervisor nginx curl postgresql-client python3 py3-pip
+RUN apk add --no-cache supervisor nginx curl postgresql-client python3 py3-pip redis
 COPY --from=builder /app/auth-server /app/project-manager /app/db-proxy /app/storage /app/sql-editor /app/edge-functions /usr/local/bin/
 COPY services/ai-assistant /app/ai-assistant
 RUN pip3 install --break-system-packages -r /app/ai-assistant/requirements.txt
