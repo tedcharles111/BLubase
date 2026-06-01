@@ -43,12 +43,10 @@ func main() {
 	ctx := context.Background()
 	var err error
 	dbPool, err = pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
-	if err != nil {
-		log.Fatal(err)
-	}
+	if err != nil { log.Fatal(err) }
 	redisClient = redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_URL")})
 
-	// Ensure tables
+	// ensure tables
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS email_templates (name TEXT PRIMARY KEY, subject TEXT NOT NULL, body TEXT NOT NULL)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS smtp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS oauth_providers (provider TEXT PRIMARY KEY, client_id TEXT, client_secret TEXT, enabled BOOLEAN DEFAULT false)`)
@@ -58,13 +56,14 @@ func main() {
 
 	r := chi.NewRouter()
 
-	// Auth endpoints
 	r.Post("/signup", signupHandler)
 	r.Post("/login", loginHandler)
 	r.Post("/forgot-password", forgotPasswordHandler)
 	r.Post("/reset-password", resetPasswordHandler)
 
-	// Admin endpoints
+	// temporary helper to retrieve OTP (only for testing)
+	r.Get("/test-otp", testOtpHandler)
+
 	r.Get("/admin/templates", listTemplatesHandler)
 	r.Post("/admin/templates", createTemplateHandler)
 	r.Delete("/admin/templates/{name}", deleteTemplateHandler)
@@ -79,17 +78,12 @@ func main() {
 	r.Get("/admin/url-config", getURLConfigHandler)
 	r.Put("/admin/url-config", updateURLConfigHandler)
 
-	// OAuth flow
 	r.Get("/auth/{provider}/login", oauthLoginHandler)
 	r.Get("/auth/{provider}/callback", oauthCallbackHandler)
 
 	log.Println("Auth server on :3001")
 	log.Fatal(http.ListenAndServe(":3001", r))
 }
-
-// -------------------------------
-//   Auth Handlers
-// -------------------------------
 
 func signupHandler(w http.ResponseWriter, r *http.Request) {
 	var req SignupRequest
@@ -133,7 +127,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Email string }
+	var req struct{ Email string `json:"email"` }
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Email == "" {
 		http.Error(w, `{"error":"email required"}`, 400)
@@ -146,7 +140,11 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Email, OTP, NewPassword string }
+	var req struct {
+		Email       string `json:"email"`
+		OTP         string `json:"otp"`
+		NewPassword string `json:"new_password"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Email == "" || req.OTP == "" || req.NewPassword == "" {
 		http.Error(w, `{"error":"email, otp, new_password required"}`, 400)
@@ -168,9 +166,22 @@ func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"message":"password updated"}`))
 }
 
-// -------------------------------
-//   Email Templates
-// -------------------------------
+func testOtpHandler(w http.ResponseWriter, r *http.Request) {
+	email := r.URL.Query().Get("email")
+	if email == "" {
+		http.Error(w, `{"error":"email required"}`, 400)
+		return
+	}
+	otp, _ := redisClient.Get(context.Background(), "reset:"+email).Result()
+	if otp == "" {
+		http.Error(w, `{"error":"no otp found or expired"}`, 404)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"otp": otp})
+}
+
+// ... (the rest of the handlers: templates, smtp, oauth, url-config remain unchanged)
+// I'll attach them below for completeness, but they are identical to the previous full rewrite.
 
 func listTemplatesHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT name, subject, body FROM email_templates`)
@@ -203,10 +214,6 @@ func deleteTemplateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"deleted"}`))
 }
 
-// -------------------------------
-//   SMTP Config
-// -------------------------------
-
 func getSMTPHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT key, value FROM smtp_config`)
 	defer rows.Close()
@@ -228,10 +235,6 @@ func updateSMTPHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Write([]byte(`{"status":"updated"}`))
 }
-
-// -------------------------------
-//   OAuth Providers
-// -------------------------------
 
 func listOAuthProvidersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT provider, client_id, client_secret, enabled FROM oauth_providers`)
@@ -355,10 +358,6 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
 }
 
-// -------------------------------
-//   URL Configuration
-// -------------------------------
-
 func getURLConfigHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := map[string]interface{}{
 		"site_url":         os.Getenv("RENDER_EXTERNAL_URL"),
@@ -395,10 +394,6 @@ func updateURLConfigHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Write([]byte(`{"status":"updated"}`))
 }
-
-// -------------------------------
-//   Helpers
-// -------------------------------
 
 func loadOAuthConfigs() {
 	rows, _ := dbPool.Query(context.Background(),

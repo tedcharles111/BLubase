@@ -59,8 +59,6 @@ async def execute_tool(name, args, token):
                 r = await c.post(url, json=args, headers=headers)
             elif method == "PUT":
                 r = await c.put(url, json=args, headers=headers)
-            else:
-                return {"error": f"unsupported method {method}"}
             return r.json() if r.status_code == 200 else {"error": r.text}
     except Exception as e:
         return {"error": f"connection failed: {str(e)}"}
