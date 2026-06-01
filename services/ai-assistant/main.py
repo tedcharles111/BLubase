@@ -1,5 +1,6 @@
 import os, json, httpx, urllib.parse
 from fastapi import FastAPI, Request
+from pydantic import BaseModel
 
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
@@ -8,6 +9,42 @@ API_BASE = "http://127.0.0.1"
 
 app = FastAPI()
 
+# ---------- Memory Database ----------
+import asyncpg
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+async def init_db():
+    conn = await asyncpg.connect(DATABASE_URL)
+    await conn.execute('''CREATE TABLE IF NOT EXISTS ai_memory (
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now()
+    )''')
+    await conn.close()
+
+@app.on_event("startup")
+async def startup():
+    await init_db()
+
+async def get_memory(user_id: str, limit: int = 20):
+    conn = await asyncpg.connect(DATABASE_URL)
+    rows = await conn.fetch(
+        "SELECT role, content FROM ai_memory WHERE user_id=$1 ORDER BY created_at ASC LIMIT $2",
+        user_id, limit
+    )
+    await conn.close()
+    return [dict(row) for row in rows]
+
+async def add_memory(user_id: str, role: str, content: str):
+    conn = await asyncpg.connect(DATABASE_URL)
+    await conn.execute(
+        "INSERT INTO ai_memory (user_id, role, content) VALUES ($1, $2, $3)",
+        user_id, role, content
+    )
+    await conn.close()
+
+# ---------- Tools (same as before, but now include full set) ----------
 TOOLS = [
     {"type":"function","function":{"name":"list_projects","description":"List all projects owned by the current user","parameters":{"type":"object","properties":{}}}},
     {"type":"function","function":{"name":"create_project","description":"Create a new project","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
@@ -51,48 +88,65 @@ async def execute_tool(name, args, token):
     if "{query}" in url:
         url = url.replace("{query}", urllib.parse.quote(args.get("query", "")))
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    try:
-        async with httpx.AsyncClient(timeout=10) as c:
-            if method == "GET":
-                r = await c.get(url, headers=headers)
-            elif method == "POST":
-                r = await c.post(url, json=args, headers=headers)
-            elif method == "PUT":
-                r = await c.put(url, json=args, headers=headers)
-            return r.json() if r.status_code == 200 else {"error": r.text}
-    except Exception as e:
-        return {"error": f"connection failed: {str(e)}"}
+    async with httpx.AsyncClient(timeout=10) as c:
+        if method == "GET":
+            r = await c.get(url, headers=headers)
+        elif method == "POST":
+            r = await c.post(url, json=args, headers=headers)
+        elif method == "PUT":
+            r = await c.put(url, json=args, headers=headers)
+        return r.json() if r.status_code == 200 else {"error": r.text}
 
 @app.post("/assist")
 async def assist(request: Request):
     token = request.headers.get("Authorization", "").removeprefix("Bearer ")
     data = await request.json()
-    query = data.get("query", "")
+    user_query = data.get("query", "")
+
+    # Extract user ID from JWT claims (simplified: use token as user_id)
+    user_id = token.split(".")[0] if token else "anonymous"
+
+    # Add user message to memory
+    await add_memory(user_id, "user", user_query)
+
+    # Load recent memory for context (last 10 messages)
+    memory = await get_memory(user_id, 10)
+
+    # Build messages: system prompt + history + current query
+    messages = [{"role": "system", "content": "You are an agentic AI for Blubase. Use the provided tools to help the user. You have access to the conversation history below. Use it to maintain context."}]
+    for mem in memory:
+        messages.append({"role": mem["role"], "content": mem["content"]})
+
     payload = {
         "model": MODEL,
-        "messages": [
-            {"role":"system","content":"You are an agentic AI for Blubase. Use the provided tools to help the user. Decide which tool to call. For chat, use help_user."},
-            {"role":"user","content": query}
-        ],
+        "messages": messages,
         "tools": TOOLS,
         "tool_choice": "auto",
         "temperature": 0.2
     }
-    try:
-        async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.post(MISTRAL_URL, json=payload,
-                             headers={"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"})
-            r.raise_for_status()
-            msg = r.json()["choices"][0]["message"]
-            if "tool_calls" in msg and msg["tool_calls"]:
-                tc = msg["tool_calls"][0]
-                fname = tc["function"]["name"]
-                fargs = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
-                result = await execute_tool(fname, fargs, token)
-                return {"answer": json.dumps(result, indent=2), "action": fname}
-            return {"answer": msg.get("content", "I'm not sure how to help.")}
-    except Exception as e:
-        return {"answer": f"Agent error: {str(e)}"}
+
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.post(MISTRAL_URL, json=payload,
+                         headers={"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"})
+        r.raise_for_status()
+        resp_data = r.json()
+        msg = resp_data["choices"][0]["message"]
+
+        answer_text = msg.get("content", "")
+        action = "chat"
+
+        if "tool_calls" in msg and msg["tool_calls"]:
+            tc = msg["tool_calls"][0]
+            fname = tc["function"]["name"]
+            fargs = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
+            result = await execute_tool(fname, fargs, token)
+            answer_text = json.dumps(result, indent=2)
+            action = fname
+
+        # Add assistant response to memory
+        await add_memory(user_id, "assistant", answer_text)
+
+        return {"answer": answer_text, "action": action}
 
 @app.get("/health")
 def health():
