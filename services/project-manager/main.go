@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,6 +32,8 @@ func main() {
 	r.Post("/projects", createProjectHandler)
 	r.Get("/projects", listProjectsHandler)
 	r.Get("/projects/{ref}/users", listProjectUsersHandler)
+	r.Post("/projects/{ref}/users", addProjectUserHandler)
+	r.Delete("/projects/{ref}/users/{id}", deleteProjectUserHandler)
 	log.Println("Project manager on :3002")
 	log.Fatal(http.ListenAndServe(":3002", r))
 }
@@ -147,4 +150,41 @@ func listProjectUsersHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	json.NewEncoder(w).Encode(users)
+}
+
+func addProjectUserHandler(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "ref")
+	tableName := fmt.Sprintf("project_%s_users", ref)
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		Phone    string `json:"phone"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Email == "" || req.Password == "" {
+		http.Error(w, `{"error":"email and password required"}`, 400)
+		return
+	}
+	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	_, err := controlDB.Exec(context.Background(),
+		`INSERT INTO `+tableName+` (email, password_hash, phone) VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING`,
+		req.Email, string(hashed), req.Phone)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+	w.Write([]byte(`{"status":"created"}`))
+}
+
+func deleteProjectUserHandler(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "ref")
+	userID := chi.URLParam(r, "id")
+	tableName := fmt.Sprintf("project_%s_users", ref)
+	_, err := controlDB.Exec(context.Background(),
+		`DELETE FROM `+tableName+` WHERE id=$1`, userID)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+	w.Write([]byte(`{"status":"deleted"}`))
 }
