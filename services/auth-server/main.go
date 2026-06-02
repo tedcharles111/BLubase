@@ -249,7 +249,7 @@ func listPlatformUsersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(),
 		`SELECT id, email, phone, suspended, created_at FROM platform_users ORDER BY created_at DESC`)
 	defer rows.Close()
-	var users []map[string]interface{}
+	users := []map[string]interface{}{}
 	for rows.Next() {
 		var id, email, phone string
 		var suspended bool
