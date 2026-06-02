@@ -48,7 +48,17 @@ func main() {
 	}
 	redisClient = redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_URL")})
 
-	// Ensure tables (including activity_log)
+	// Ensure all tables
+	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS platform_users (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		email TEXT UNIQUE,
+		password_hash TEXT,
+		phone TEXT,
+		mfa_enabled BOOLEAN DEFAULT false,
+		mfa_secret TEXT,
+		suspended BOOLEAN DEFAULT false,
+		created_at TIMESTAMPTZ DEFAULT now()
+	)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS email_templates (name TEXT PRIMARY KEY, subject TEXT NOT NULL, body TEXT NOT NULL)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS smtp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS oauth_providers (provider TEXT PRIMARY KEY, client_id TEXT, client_secret TEXT, enabled BOOLEAN DEFAULT false)`)
@@ -60,20 +70,37 @@ func main() {
 		details TEXT,
 		created_at TIMESTAMPTZ DEFAULT now()
 	)`)
+	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS admin_messages (
+		id SERIAL PRIMARY KEY,
+		user_id TEXT,
+		direction TEXT,
+		content TEXT,
+		created_at TIMESTAMPTZ DEFAULT now()
+	)`)
 
 	loadOAuthConfigs()
 
 	r := chi.NewRouter()
 
+	// Auth endpoints
 	r.Post("/signup", signupHandler)
 	r.Post("/login", loginHandler)
 	r.Post("/forgot-password", forgotPasswordHandler)
 	r.Post("/reset-password", resetPasswordHandler)
 
-	// Activity log endpoints
+	// Activity log
 	r.Post("/activity", logActivityHandler)
 	r.Get("/activity", listActivityHandler)
 
+	// Admin endpoints (protected by admin check in each handler)
+	r.Get("/admin/platform-users", listPlatformUsersHandler)
+	r.Put("/admin/platform-users/{id}/status", toggleUserStatusHandler)
+	r.Post("/admin/platform-users/{id}/message", sendAdminMessageHandler)
+	r.Get("/admin/platform-users/{id}/messages", getUserMessagesHandler)
+	r.Get("/admin/projects", listAllProjectsHandler)
+	r.Put("/admin/projects/{ref}/status", toggleProjectStatusHandler)
+
+	// Regular admin endpoints
 	r.Get("/admin/templates", listTemplatesHandler)
 	r.Post("/admin/templates", createTemplateHandler)
 	r.Delete("/admin/templates/{name}", deleteTemplateHandler)
@@ -95,6 +122,28 @@ func main() {
 	log.Fatal(http.ListenAndServe(":3001", r))
 }
 
+// ---------- Admin Middleware (simplified: check if user email ends with @blubase.dev) ----------
+func isAdmin(r *http.Request) bool {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") { return false }
+	tokenStr := auth[7:]
+	claims := jwt.MapClaims{}
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+	if err != nil { return false }
+	email, _ := claims["email"].(string)
+	return strings.HasSuffix(email, "@blubase.dev")
+}
+
+func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if !isAdmin(r) {
+		http.Error(w, `{"error":"admin access required"}`, 403)
+		return false
+	}
+	return true
+}
+
 // ---------- Auth Handlers ----------
 func signupHandler(w http.ResponseWriter, r *http.Request) {
 	var req SignupRequest
@@ -111,7 +160,6 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
-	// Log activity
 	logActivity(r, "signup", req.Email)
 	w.Write([]byte(`{"message":"signup successful"}`))
 }
@@ -124,10 +172,15 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var userID, hashed string
+	var suspended bool
 	err := dbPool.QueryRow(context.Background(),
-		`SELECT id, password_hash FROM platform_users WHERE email=$1`, req.Email).Scan(&userID, &hashed)
+		`SELECT id, password_hash, suspended FROM platform_users WHERE email=$1`, req.Email).Scan(&userID, &hashed, &suspended)
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(hashed), []byte(req.Password)) != nil {
 		http.Error(w, `{"error":"invalid credentials"}`, 401)
+		return
+	}
+	if suspended {
+		http.Error(w, `{"error":"account suspended"}`, 403)
 		return
 	}
 	claims := jwt.MapClaims{
@@ -187,7 +240,7 @@ func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"message":"password updated"}`))
 }
 
-// ---------- Activity Log Helpers ----------
+// ---------- Activity Log ----------
 func extractUserID(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if len(auth) < 8 || auth[:7] != "Bearer " {
@@ -229,9 +282,7 @@ func logActivityHandler(w http.ResponseWriter, r *http.Request) {
 func listActivityHandler(w http.ResponseWriter, r *http.Request) {
 	userID := extractUserID(r)
 	limit := r.URL.Query().Get("limit")
-	if limit == "" {
-		limit = "50"
-	}
+	if limit == "" { limit = "50" }
 	rows, _ := dbPool.Query(context.Background(),
 		`SELECT action, details, created_at FROM activity_log WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`,
 		userID, limit)
@@ -248,7 +299,103 @@ func listActivityHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(activities)
 }
 
-// ---------- Email Templates ----------
+// ---------- ADMIN: Platform Users ----------
+func listPlatformUsersHandler(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) { return }
+	rows, _ := dbPool.Query(context.Background(),
+		`SELECT id, email, phone, suspended, created_at FROM platform_users ORDER BY created_at DESC`)
+	defer rows.Close()
+	var users []map[string]interface{}
+	for rows.Next() {
+		var id, email, phone string
+		var suspended bool
+		var createdAt time.Time
+		rows.Scan(&id, &email, &phone, &suspended, &createdAt)
+		users = append(users, map[string]interface{}{
+			"id": id, "email": email, "phone": phone,
+			"suspended": suspended, "created_at": createdAt,
+		})
+	}
+	json.NewEncoder(w).Encode(users)
+}
+
+func toggleUserStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) { return }
+	userID := chi.URLParam(r, "id")
+	var req struct{ Suspended bool `json:"suspended"` }
+	json.NewDecoder(r.Body).Decode(&req)
+	dbPool.Exec(context.Background(),
+		`UPDATE platform_users SET suspended=$1 WHERE id=$2`, req.Suspended, userID)
+	w.Write([]byte(`{"status":"updated"}`))
+}
+
+func sendAdminMessageHandler(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) { return }
+	userID := chi.URLParam(r, "id")
+	var req struct{ Content string `json:"content"` }
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Content == "" {
+		http.Error(w, `{"error":"content required"}`, 400)
+		return
+	}
+	dbPool.Exec(context.Background(),
+		`INSERT INTO admin_messages (user_id, direction, content) VALUES ($1,'admin', $2)`,
+		userID, req.Content)
+	w.Write([]byte(`{"status":"sent"}`))
+}
+
+func getUserMessagesHandler(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) { return }
+	userID := chi.URLParam(r, "id")
+	rows, _ := dbPool.Query(context.Background(),
+		`SELECT direction, content, created_at FROM admin_messages WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`,
+		userID)
+	defer rows.Close()
+	var msgs []map[string]interface{}
+	for rows.Next() {
+		var dir, content string
+		var createdAt time.Time
+		rows.Scan(&dir, &content, &createdAt)
+		msgs = append(msgs, map[string]interface{}{
+			"direction": dir, "content": content, "created_at": createdAt,
+		})
+	}
+	json.NewEncoder(w).Encode(msgs)
+}
+
+// ---------- ADMIN: All Projects ----------
+func listAllProjectsHandler(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) { return }
+	rows, _ := dbPool.Query(context.Background(),
+		`SELECT id, name, ref, owner_id, anon_key, created_at FROM projects ORDER BY created_at DESC`)
+	defer rows.Close()
+	var projects []map[string]interface{}
+	for rows.Next() {
+		var id, name, ref, ownerID, anonKey string
+		var createdAt time.Time
+		rows.Scan(&id, &name, &ref, &ownerID, &anonKey, &createdAt)
+		projects = append(projects, map[string]interface{}{
+			"id": id, "name": name, "ref": ref,
+			"owner_id": ownerID, "anon_key": anonKey,
+			"created_at": createdAt,
+		})
+	}
+	json.NewEncoder(w).Encode(projects)
+}
+
+func toggleProjectStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) { return }
+	ref := chi.URLParam(r, "ref")
+	var req struct{ Status string `json:"status"` }
+	json.NewDecoder(r.Body).Decode(&req)
+	dbPool.Exec(context.Background(),
+		`UPDATE projects SET status=$1 WHERE ref=$2`, req.Status, ref)
+	w.Write([]byte(`{"status":"updated"}`))
+}
+
+// ---------- Templates, SMTP, OAuth, URL Config ----------
+// (same as before, unchanged)
+
 func listTemplatesHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT name, subject, body FROM email_templates`)
 	defer rows.Close()
@@ -280,7 +427,6 @@ func deleteTemplateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"deleted"}`))
 }
 
-// ---------- SMTP Config ----------
 func getSMTPHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT key, value FROM smtp_config`)
 	defer rows.Close()
@@ -303,7 +449,6 @@ func updateSMTPHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"updated"}`))
 }
 
-// ---------- OAuth Providers ----------
 func listOAuthProvidersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(), `SELECT provider, client_id, client_secret, enabled FROM oauth_providers`)
 	defer rows.Close()
@@ -348,7 +493,6 @@ func updateOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"updated"}`))
 }
 
-// ---------- OAuth Login/Callback ----------
 func oauthLoginHandler(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
 	config, ok := oauthConfigs[provider]
@@ -427,7 +571,6 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
 }
 
-// ---------- URL Configuration ----------
 func getURLConfigHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := map[string]interface{}{
 		"site_url":         os.Getenv("RENDER_EXTERNAL_URL"),
@@ -465,7 +608,6 @@ func updateURLConfigHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"updated"}`))
 }
 
-// ---------- OAuth Config Loader ----------
 func loadOAuthConfigs() {
 	rows, _ := dbPool.Query(context.Background(),
 		`SELECT provider, client_id, client_secret, enabled FROM oauth_providers WHERE enabled=true`)
