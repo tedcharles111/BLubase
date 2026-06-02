@@ -105,7 +105,7 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	_, err := dbPool.Exec(context.Background(),
-		`INSERT INTO users (email, password_hash, phone) VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING`,
+		`INSERT INTO platform_users (email, password_hash, phone) VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING`,
 		req.Email, string(hashed), req.Phone)
 	if err != nil {
 		http.Error(w, `{"error":"database error"}`, 500)
@@ -125,7 +125,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	var userID, hashed string
 	err := dbPool.QueryRow(context.Background(),
-		`SELECT id, password_hash FROM users WHERE email=$1`, req.Email).Scan(&userID, &hashed)
+		`SELECT id, password_hash FROM platform_users WHERE email=$1`, req.Email).Scan(&userID, &hashed)
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(hashed), []byte(req.Password)) != nil {
 		http.Error(w, `{"error":"invalid credentials"}`, 401)
 		return
@@ -178,7 +178,7 @@ func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	redisClient.Del(context.Background(), "reset:"+req.Email)
 	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 	_, err := dbPool.Exec(context.Background(),
-		`UPDATE users SET password_hash=$1 WHERE email=$2`, string(hashed), req.Email)
+		`UPDATE platform_users SET password_hash=$1 WHERE email=$2`, string(hashed), req.Email)
 	if err != nil {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
@@ -412,7 +412,7 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	var userID string
 	err = dbPool.QueryRow(context.Background(),
-		`INSERT INTO users (email) VALUES ($1) ON CONFLICT (email) DO UPDATE SET email=$1 RETURNING id`, email).Scan(&userID)
+		`INSERT INTO platform_users (email) VALUES ($1) ON CONFLICT (email) DO UPDATE SET email=$1 RETURNING id`, email).Scan(&userID)
 	if err != nil {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
