@@ -43,7 +43,9 @@ func main() {
 	ctx := context.Background()
 	var err error
 	dbPool, err = pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 	redisClient = redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_URL")})
 
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS platform_users (
@@ -95,7 +97,7 @@ func main() {
 	log.Fatal(http.ListenAndServe(":3001", r))
 }
 
-func isAdmin(r *http.Request) bool { return true }          // <-- temporary admin bypass
+func isAdmin(r *http.Request) bool { return true }
 func requireAdmin(w http.ResponseWriter, r *http.Request) bool { return true }
 
 func signupHandler(w http.ResponseWriter, r *http.Request) {
@@ -137,8 +139,10 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	claims := jwt.MapClaims{
-		"sub": userID, "email": req.Email,
-		"iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix(),
+		"sub":   userID,
+		"email": req.Email,
+		"iat":   time.Now().Unix(),
+		"exp":   time.Now().Add(24 * time.Hour).Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := token.SignedString(jwtSecret)
@@ -163,7 +167,11 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Email, OTP, NewPassword string `json:"email,otp,new_password"` }
+	var req struct {
+		Email       string `json:"email"`
+		OTP         string `json:"otp"`
+		NewPassword string `json:"new_password"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Email == "" || req.OTP == "" || req.NewPassword == "" {
 		http.Error(w, `{"error":"email, otp, new_password required"}`, 400)
@@ -183,43 +191,64 @@ func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 
 func extractUserID(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
-	if len(auth) < 8 || auth[:7] != "Bearer " { return "anonymous" }
+	if len(auth) < 8 || auth[:7] != "Bearer " {
+		return "anonymous"
+	}
 	tokenStr := auth[7:]
 	claims := jwt.MapClaims{}
-	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) { return jwtSecret, nil })
-	if err != nil { return "anonymous" }
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+	if err != nil {
+		return "anonymous"
+	}
 	sub, _ := claims["sub"].(string)
 	return sub
 }
 func logActivity(r *http.Request, action, details string) {
 	userID := extractUserID(r)
-	dbPool.Exec(context.Background(), `INSERT INTO activity_log (user_id, action, details) VALUES ($1,$2,$3)`, userID, action, details)
+	dbPool.Exec(context.Background(),
+		`INSERT INTO activity_log (user_id, action, details) VALUES ($1,$2,$3)`,
+		userID, action, details)
 }
 func logActivityHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Action, Details string `json:"action,details"` }
+	var req struct {
+		Action  string `json:"action"`
+		Details string `json:"details"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Action == "" { http.Error(w, `{"error":"action required"}`, 400); return }
+	if req.Action == "" {
+		http.Error(w, `{"error":"action required"}`, 400)
+		return
+	}
 	logActivity(r, req.Action, req.Details)
 	w.Write([]byte(`{"status":"logged"}`))
 }
 func listActivityHandler(w http.ResponseWriter, r *http.Request) {
 	userID := extractUserID(r)
 	limit := r.URL.Query().Get("limit")
-	if limit == "" { limit = "50" }
-	rows, _ := dbPool.Query(context.Background(), `SELECT action, details, created_at FROM activity_log WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
+	if limit == "" {
+		limit = "50"
+	}
+	rows, _ := dbPool.Query(context.Background(),
+		`SELECT action, details, created_at FROM activity_log WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`,
+		userID, limit)
 	defer rows.Close()
 	var activities []map[string]interface{}
 	for rows.Next() {
 		var action, details string
 		var createdAt time.Time
 		rows.Scan(&action, &details, &createdAt)
-		activities = append(activities, map[string]interface{}{"action": action, "details": details, "created_at": createdAt})
+		activities = append(activities, map[string]interface{}{
+			"action": action, "details": details, "created_at": createdAt,
+		})
 	}
 	json.NewEncoder(w).Encode(activities)
 }
 
 func listPlatformUsersHandler(w http.ResponseWriter, r *http.Request) {
-	rows, _ := dbPool.Query(context.Background(), `SELECT id, email, phone, suspended, created_at FROM platform_users ORDER BY created_at DESC`)
+	rows, _ := dbPool.Query(context.Background(),
+		`SELECT id, email, phone, suspended, created_at FROM platform_users ORDER BY created_at DESC`)
 	defer rows.Close()
 	var users []map[string]interface{}
 	for rows.Next() {
@@ -227,7 +256,10 @@ func listPlatformUsersHandler(w http.ResponseWriter, r *http.Request) {
 		var suspended bool
 		var createdAt time.Time
 		rows.Scan(&id, &email, &phone, &suspended, &createdAt)
-		users = append(users, map[string]interface{}{"id": id, "email": email, "phone": phone, "suspended": suspended, "created_at": createdAt})
+		users = append(users, map[string]interface{}{
+			"id": id, "email": email, "phone": phone,
+			"suspended": suspended, "created_at": createdAt,
+		})
 	}
 	json.NewEncoder(w).Encode(users)
 }
@@ -235,39 +267,54 @@ func toggleUserStatusHandler(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "id")
 	var req struct{ Suspended bool `json:"suspended"` }
 	json.NewDecoder(r.Body).Decode(&req)
-	dbPool.Exec(context.Background(), `UPDATE platform_users SET suspended=$1 WHERE id=$2`, req.Suspended, userID)
+	dbPool.Exec(context.Background(),
+		`UPDATE platform_users SET suspended=$1 WHERE id=$2`, req.Suspended, userID)
 	w.Write([]byte(`{"status":"updated"}`))
 }
 func sendAdminMessageHandler(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "id")
 	var req struct{ Content string `json:"content"` }
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Content == "" { http.Error(w, `{"error":"content required"}`, 400); return }
-	dbPool.Exec(context.Background(), `INSERT INTO admin_messages (user_id, direction, content) VALUES ($1,'admin',$2)`, userID, req.Content)
+	if req.Content == "" {
+		http.Error(w, `{"error":"content required"}`, 400)
+		return
+	}
+	dbPool.Exec(context.Background(),
+		`INSERT INTO admin_messages (user_id, direction, content) VALUES ($1,'admin',$2)`,
+		userID, req.Content)
 	w.Write([]byte(`{"status":"sent"}`))
 }
 func getUserMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "id")
-	rows, _ := dbPool.Query(context.Background(), `SELECT direction, content, created_at FROM admin_messages WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, userID)
+	rows, _ := dbPool.Query(context.Background(),
+		`SELECT direction, content, created_at FROM admin_messages WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`,
+		userID)
 	defer rows.Close()
 	var msgs []map[string]interface{}
 	for rows.Next() {
 		var dir, content string
 		var createdAt time.Time
 		rows.Scan(&dir, &content, &createdAt)
-		msgs = append(msgs, map[string]interface{}{"direction": dir, "content": content, "created_at": createdAt})
+		msgs = append(msgs, map[string]interface{}{
+			"direction": dir, "content": content, "created_at": createdAt,
+		})
 	}
 	json.NewEncoder(w).Encode(msgs)
 }
 func listAllProjectsHandler(w http.ResponseWriter, r *http.Request) {
-	rows, _ := dbPool.Query(context.Background(), `SELECT id, name, ref, owner_id, anon_key, created_at FROM projects ORDER BY created_at DESC`)
+	rows, _ := dbPool.Query(context.Background(),
+		`SELECT id, name, ref, owner_id, anon_key, created_at FROM projects ORDER BY created_at DESC`)
 	defer rows.Close()
 	var projects []map[string]interface{}
 	for rows.Next() {
 		var id, name, ref, ownerID, anonKey string
 		var createdAt time.Time
 		rows.Scan(&id, &name, &ref, &ownerID, &anonKey, &createdAt)
-		projects = append(projects, map[string]interface{}{"id": id, "name": name, "ref": ref, "owner_id": ownerID, "anon_key": anonKey, "created_at": createdAt})
+		projects = append(projects, map[string]interface{}{
+			"id": id, "name": name, "ref": ref,
+			"owner_id": ownerID, "anon_key": anonKey,
+			"created_at": createdAt,
+		})
 	}
 	json.NewEncoder(w).Encode(projects)
 }
@@ -275,7 +322,8 @@ func toggleProjectStatusHandler(w http.ResponseWriter, r *http.Request) {
 	ref := chi.URLParam(r, "ref")
 	var req struct{ Status string `json:"status"` }
 	json.NewDecoder(r.Body).Decode(&req)
-	dbPool.Exec(context.Background(), `UPDATE projects SET status=$1 WHERE ref=$2`, req.Status, ref)
+	dbPool.Exec(context.Background(),
+		`UPDATE projects SET status=$1 WHERE ref=$2`, req.Status, ref)
 	w.Write([]byte(`{"status":"updated"}`))
 }
 
@@ -291,10 +339,15 @@ func listTemplatesHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(templates)
 }
 func createTemplateHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Name, Subject, Body string `json:"name,subject,body"` }
+	var req struct{ Name, Subject, Body string }
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Name == "" || req.Subject == "" || req.Body == "" { http.Error(w, `{"error":"name, subject, body required"}`, 400); return }
-	dbPool.Exec(context.Background(), `INSERT INTO email_templates (name, subject, body) VALUES ($1,$2,$3) ON CONFLICT (name) DO UPDATE SET subject=$2, body=$3`, req.Name, req.Subject, req.Body)
+	if req.Name == "" || req.Subject == "" || req.Body == "" {
+		http.Error(w, `{"error":"name, subject, body required"}`, 400)
+		return
+	}
+	dbPool.Exec(context.Background(),
+		`INSERT INTO email_templates (name, subject, body) VALUES ($1,$2,$3) ON CONFLICT (name) DO UPDATE SET subject=$2, body=$3`,
+		req.Name, req.Subject, req.Body)
 	w.Write([]byte(`{"status":"created"}`))
 }
 func deleteTemplateHandler(w http.ResponseWriter, r *http.Request) {
@@ -317,43 +370,70 @@ func updateSMTPHandler(w http.ResponseWriter, r *http.Request) {
 	var req map[string]string
 	json.NewDecoder(r.Body).Decode(&req)
 	for k, v := range req {
-		dbPool.Exec(context.Background(), `INSERT INTO smtp_config (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2`, k, v)
+		dbPool.Exec(context.Background(),
+			`INSERT INTO smtp_config (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2`, k, v)
 	}
 	w.Write([]byte(`{"status":"updated"}`))
 }
 func listOAuthProvidersHandler(w http.ResponseWriter, r *http.Request) {
-	rows, _ := dbPool.Query(context.Background(), `SELECT provider, client_id, client_secret, enabled FROM oauth_providers`)
+	rows, _ := dbPool.Query(context.Background(),
+		`SELECT provider, client_id, client_secret, enabled FROM oauth_providers`)
 	defer rows.Close()
 	providers := []map[string]interface{}{}
 	for rows.Next() {
 		var p, cid, csecret string
 		var en bool
 		rows.Scan(&p, &cid, &csecret, &en)
-		providers = append(providers, map[string]interface{}{"provider": p, "client_id": cid, "client_secret": "***", "enabled": en})
+		providers = append(providers, map[string]interface{}{
+			"provider": p, "client_id": cid, "client_secret": "***", "enabled": en,
+		})
 	}
 	json.NewEncoder(w).Encode(providers)
 }
 func createOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Provider, ClientID, ClientSecret string; Enabled bool `json:"provider,client_id,client_secret,enabled"` }
+	var req struct {
+		Provider     string `json:"provider"`
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+		Enabled      bool   `json:"enabled"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Provider == "" || req.ClientID == "" || req.ClientSecret == "" { http.Error(w, `{"error":"provider, client_id, client_secret required"}`, 400); return }
-	dbPool.Exec(context.Background(), `INSERT INTO oauth_providers (provider, client_id, client_secret, enabled) VALUES ($1,$2,$3,$4) ON CONFLICT (provider) DO UPDATE SET client_id=$2, client_secret=$3, enabled=$4`, req.Provider, req.ClientID, req.ClientSecret, req.Enabled)
+	if req.Provider == "" || req.ClientID == "" || req.ClientSecret == "" {
+		http.Error(w, `{"error":"provider, client_id, client_secret required"}`, 400)
+		return
+	}
+	dbPool.Exec(context.Background(),
+		`INSERT INTO oauth_providers (provider, client_id, client_secret, enabled) VALUES ($1,$2,$3,$4) ON CONFLICT (provider) DO UPDATE SET client_id=$2, client_secret=$3, enabled=$4`,
+		req.Provider, req.ClientID, req.ClientSecret, req.Enabled)
 	loadOAuthConfigs()
 	w.Write([]byte(`{"status":"created"}`))
 }
 func updateOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
-	var req struct{ ClientID, ClientSecret string; Enabled bool `json:"client_id,client_secret,enabled"` }
+	var req struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+		Enabled      bool   `json:"enabled"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.ClientID == "" || req.ClientSecret == "" { http.Error(w, `{"error":"client_id, client_secret required"}`, 400); return }
-	dbPool.Exec(context.Background(), `UPDATE oauth_providers SET client_id=$1, client_secret=$2, enabled=$3 WHERE provider=$4`, req.ClientID, req.ClientSecret, req.Enabled, provider)
+	if req.ClientID == "" || req.ClientSecret == "" {
+		http.Error(w, `{"error":"client_id, client_secret required"}`, 400)
+		return
+	}
+	dbPool.Exec(context.Background(),
+		`UPDATE oauth_providers SET client_id=$1, client_secret=$2, enabled=$3 WHERE provider=$4`,
+		req.ClientID, req.ClientSecret, req.Enabled, provider)
 	loadOAuthConfigs()
 	w.Write([]byte(`{"status":"updated"}`))
 }
+
 func oauthLoginHandler(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
 	config, ok := oauthConfigs[provider]
-	if !ok { http.Error(w, "provider not configured", 404); return }
+	if !ok {
+		http.Error(w, "provider not configured", 404)
+		return
+	}
 	state := make([]byte, 16)
 	rand.Read(state)
 	stateStr := base64.URLEncoding.EncodeToString(state)
@@ -364,14 +444,24 @@ func oauthLoginHandler(w http.ResponseWriter, r *http.Request) {
 func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
 	config, ok := oauthConfigs[provider]
-	if !ok { http.Error(w, "provider not configured", 404); return }
+	if !ok {
+		http.Error(w, "provider not configured", 404)
+		return
+	}
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 	val, _ := redisClient.Get(context.Background(), "oauth:"+state).Result()
-	if val != provider { http.Error(w, "invalid state", 400); return }
+	if val != provider {
+		http.Error(w, "invalid state", 400)
+		return
+	}
 	redisClient.Del(context.Background(), "oauth:"+state)
+
 	token, err := config.Exchange(context.Background(), code)
-	if err != nil { http.Error(w, "token exchange failed: "+err.Error(), 500); return }
+	if err != nil {
+		http.Error(w, "token exchange failed: "+err.Error(), 500)
+		return
+	}
 	var email string
 	switch provider {
 	case "github":
@@ -379,10 +469,20 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 		resp, _ := http.DefaultClient.Do(req)
 		defer resp.Body.Close()
-		var emails []struct{ Email string; Primary bool }
+		var emails []struct {
+			Email   string
+			Primary bool
+		}
 		json.NewDecoder(resp.Body).Decode(&emails)
-		for _, e := range emails { if e.Primary { email = e.Email; break } }
-		if email == "" && len(emails) > 0 { email = emails[0].Email }
+		for _, e := range emails {
+			if e.Primary {
+				email = e.Email
+				break
+			}
+		}
+		if email == "" && len(emails) > 0 {
+			email = emails[0].Email
+		}
 	case "google":
 		resp, _ := http.Get("https://www.googleapis.com/oauth2/v2/userinfo?access_token=" + token.AccessToken)
 		defer resp.Body.Close()
@@ -390,17 +490,35 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(resp.Body).Decode(&guser)
 		email = guser.Email
 	}
-	if email == "" { http.Error(w, "could not fetch email", 500); return }
+	if email == "" {
+		http.Error(w, "could not fetch email", 500)
+		return
+	}
+
 	var userID string
-	err = dbPool.QueryRow(context.Background(), `INSERT INTO platform_users (email) VALUES ($1) ON CONFLICT (email) DO UPDATE SET email=$1 RETURNING id`, email).Scan(&userID)
-	if err != nil { http.Error(w, `{"error":"database error"}`, 500); return }
-	claims := jwt.MapClaims{"sub": userID, "email": email, "iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix()}
+	err = dbPool.QueryRow(context.Background(),
+		`INSERT INTO platform_users (email) VALUES ($1) ON CONFLICT (email) DO UPDATE SET email=$1 RETURNING id`,
+		email).Scan(&userID)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+
+	claims := jwt.MapClaims{
+		"sub": userID, "email": email,
+		"iat": time.Now().Unix(), "exp": time.Now().Add(24 * time.Hour).Unix(),
+	}
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := jwtToken.SignedString(jwtSecret)
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
 }
+
 func getURLConfigHandler(w http.ResponseWriter, r *http.Request) {
-	cfg := map[string]interface{}{"site_url": os.Getenv("RENDER_EXTERNAL_URL"), "jwt_expiry_hours": 24, "redirect_urls": []string{}}
+	cfg := map[string]interface{}{
+		"site_url":         os.Getenv("RENDER_EXTERNAL_URL"),
+		"jwt_expiry_hours": 24,
+		"redirect_urls":    []string{},
+	}
 	rows, _ := dbPool.Query(context.Background(), `SELECT url FROM allowed_redirect_urls`)
 	defer rows.Close()
 	var urls []string
@@ -409,21 +527,32 @@ func getURLConfigHandler(w http.ResponseWriter, r *http.Request) {
 		rows.Scan(&u)
 		urls = append(urls, u)
 	}
-	if urls != nil { cfg["redirect_urls"] = urls }
+	if urls != nil {
+		cfg["redirect_urls"] = urls
+	}
 	json.NewEncoder(w).Encode(cfg)
 }
 func updateURLConfigHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ SiteURL string `json:"site_url"`; JWTExpiryHours int `json:"jwt_expiry_hours"`; RedirectURLs []string `json:"redirect_urls"` }
+	var req struct {
+		SiteURL        string   `json:"site_url"`
+		JWTExpiryHours int      `json:"jwt_expiry_hours"`
+		RedirectURLs   []string `json:"redirect_urls"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.SiteURL != "" { os.Setenv("RENDER_EXTERNAL_URL", req.SiteURL) }
+	if req.SiteURL != "" {
+		os.Setenv("RENDER_EXTERNAL_URL", req.SiteURL)
+	}
 	if req.RedirectURLs != nil {
 		dbPool.Exec(context.Background(), `DELETE FROM allowed_redirect_urls`)
-		for _, u := range req.RedirectURLs { dbPool.Exec(context.Background(), `INSERT INTO allowed_redirect_urls (url) VALUES ($1)`, u) }
+		for _, u := range req.RedirectURLs {
+			dbPool.Exec(context.Background(), `INSERT INTO allowed_redirect_urls (url) VALUES ($1)`, u)
+		}
 	}
 	w.Write([]byte(`{"status":"updated"}`))
 }
 func loadOAuthConfigs() {
-	rows, _ := dbPool.Query(context.Background(), `SELECT provider, client_id, client_secret, enabled FROM oauth_providers WHERE enabled=true`)
+	rows, _ := dbPool.Query(context.Background(),
+		`SELECT provider, client_id, client_secret, enabled FROM oauth_providers WHERE enabled=true`)
 	defer rows.Close()
 	for rows.Next() {
 		var p, cid, csecret string
@@ -432,9 +561,21 @@ func loadOAuthConfigs() {
 		redirectURL := fmt.Sprintf("%s/auth/%s/callback", os.Getenv("RENDER_EXTERNAL_URL"), p)
 		switch p {
 		case "github":
-			oauthConfigs[p] = &oauth2.Config{ClientID: cid, ClientSecret: csecret, RedirectURL: redirectURL, Scopes: []string{"user:email"}, Endpoint: github.Endpoint}
+			oauthConfigs[p] = &oauth2.Config{
+				ClientID:     cid,
+				ClientSecret: csecret,
+				RedirectURL:  redirectURL,
+				Scopes:       []string{"user:email"},
+				Endpoint:     github.Endpoint,
+			}
 		case "google":
-			oauthConfigs[p] = &oauth2.Config{ClientID: cid, ClientSecret: csecret, RedirectURL: redirectURL, Scopes: []string{"https://www.googleapis.com/auth/userinfo.email"}, Endpoint: google.Endpoint}
+			oauthConfigs[p] = &oauth2.Config{
+				ClientID:     cid,
+				ClientSecret: csecret,
+				RedirectURL:  redirectURL,
+				Scopes:       []string{"https://www.googleapis.com/auth/userinfo.email"},
+				Endpoint:     google.Endpoint,
+			}
 		}
 	}
 }
