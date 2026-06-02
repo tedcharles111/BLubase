@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -29,7 +30,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Post("/projects", createProjectHandler)
 	r.Get("/projects", listProjectsHandler)
-	r.Get("/schema", schemaVisualizerHandler)  // new
+	r.Get("/projects/{ref}/users", listProjectUsersHandler)
 	log.Println("Project manager on :3002")
 	log.Fatal(http.ListenAndServe(":3002", r))
 }
@@ -62,12 +63,31 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 	ref := make([]byte, 6)
 	rand.Read(ref)
 	refStr := base64.URLEncoding.EncodeToString(ref)[:6]
+
 	anonToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"ref": refStr, "role": "anon", "iat": time.Now().Unix(),
 	})
 	anonKey, _ := anonToken.SignedString(jwtSignKey)
+
+	// Create the project's own users table
+	tableName := fmt.Sprintf("project_%s_users", refStr)
+	_, err := controlDB.Exec(context.Background(),
+		`CREATE TABLE IF NOT EXISTS `+tableName+` (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			email TEXT UNIQUE,
+			password_hash TEXT,
+			phone TEXT,
+			mfa_enabled BOOLEAN DEFAULT false,
+			mfa_secret TEXT,
+			created_at TIMESTAMPTZ DEFAULT now()
+		)`)
+	if err != nil {
+		http.Error(w, `{"error":"could not create project users table"}`, 500)
+		return
+	}
+
 	var projectID string
-	err := controlDB.QueryRow(context.Background(),
+	err = controlDB.QueryRow(context.Background(),
 		`INSERT INTO projects (name, ref, owner_id, anon_key) VALUES ($1,$2,$3,$4) RETURNING id`,
 		req.Name, refStr, userID, anonKey).Scan(&projectID)
 	if err != nil {
@@ -93,7 +113,7 @@ func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	projects := []map[string]interface{}{}
+	var projects []map[string]interface{}
 	for rows.Next() {
 		var id, name, ref, anonKey string
 		var createdAt time.Time
@@ -107,23 +127,24 @@ func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(projects)
 }
 
-func schemaVisualizerHandler(w http.ResponseWriter, r *http.Request) {
+func listProjectUsersHandler(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "ref")
+	tableName := fmt.Sprintf("project_%s_users", ref)
 	rows, err := controlDB.Query(context.Background(),
-		`SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema='public' ORDER BY table_name, ordinal_position`)
+		`SELECT id, email, phone, created_at FROM `+tableName+` ORDER BY created_at DESC`)
 	if err != nil {
 		json.NewEncoder(w).Encode([]interface{}{})
 		return
 	}
 	defer rows.Close()
-	type Col struct {
-		Name string `json:"name"`
-		Type string `json:"type"`
-	}
-	schema := map[string][]Col{}
+	var users []map[string]interface{}
 	for rows.Next() {
-		var t, c, d string
-		rows.Scan(&t, &c, &d)
-		schema[t] = append(schema[t], Col{Name: c, Type: d})
+		var id, email, phone string
+		var createdAt time.Time
+		rows.Scan(&id, &email, &phone, &createdAt)
+		users = append(users, map[string]interface{}{
+			"id": id, "email": email, "phone": phone, "created_at": createdAt,
+		})
 	}
-	json.NewEncoder(w).Encode(schema)
+	json.NewEncoder(w).Encode(users)
 }
