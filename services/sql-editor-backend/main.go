@@ -29,6 +29,7 @@ func main() {
 	)`)
 
 	r := chi.NewRouter()
+	r.Post("/import", importHandler)
 	r.Get("/sql", runSQLHandler)
 	r.Get("/history", historyHandler)
 	log.Println("SQL Editor on :3007")
@@ -86,4 +87,31 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 		history = append(history, map[string]interface{}{"query": query, "created_at": createdAt})
 	}
 	json.NewEncoder(w).Encode(history)
+}
+
+import (
+	"io"
+	"net/http"
+	"os/exec"
+)
+
+func importHandler(w http.ResponseWriter, r *http.Request) {
+	r.ParseMultipartForm(10 << 20) // 10 MB
+	file, _, err := r.FormFile("sqlfile")
+	if err != nil {
+		http.Error(w, "missing file", 400)
+		return
+	}
+	defer file.Close()
+	data, _ := io.ReadAll(file)
+	// Execute via psql (more reliable than Go driver for multi‑statement)
+	cmd := exec.Command("psql", os.Getenv("DATABASE_URL"), "-c", string(data))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write(out)
+		w.WriteHeader(500)
+		return
+	}
+	w.Write([]byte("migration successful"))
 }
