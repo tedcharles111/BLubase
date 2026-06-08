@@ -150,3 +150,36 @@ func deleteProjectUserHandler(w http.ResponseWriter, r *http.Request) {
 	controlDB.Exec(context.Background(), `DELETE FROM `+tableName+` WHERE id=$1`, userID)
 	w.Write([]byte(`{"status":"deleted"}`))
 }
+
+// Overwrite listProjectUsersHandler to union project users + public users
+func init() {
+	// replace the existing function at startup
+	listProjectUsersHandler = func(w http.ResponseWriter, r *http.Request) {
+		ref := getProjectRef(r)
+		tableName := fmt.Sprintf("project_%s_users", ref)
+
+		// Query both tables and combine
+		query := fmt.Sprintf(
+			`SELECT id, email, phone, created_at FROM %s
+			 UNION ALL
+			 SELECT id, email, NULL as phone, created_at FROM public.users
+			 ORDER BY created_at DESC`, tableName)
+
+		rows, err := controlDB.Query(context.Background(), query)
+		if err != nil {
+			// fallback to only project users if public.users doesn't exist
+			rows, _ = controlDB.Query(context.Background(),
+				`SELECT id, email, phone, created_at FROM `+tableName+` ORDER BY created_at DESC`)
+		}
+		defer rows.Close()
+		var users []map[string]interface{}
+		for rows.Next() {
+			var id, email, phone string
+			var createdAt time.Time
+			rows.Scan(&id, &email, &phone, &createdAt)
+			users = append(users, map[string]interface{}{"id": id, "email": email, "phone": phone, "created_at": createdAt})
+		}
+		if users == nil { users = []map[string]interface{}{} }
+		json.NewEncoder(w).Encode(users)
+	}
+}
