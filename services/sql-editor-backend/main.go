@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -18,9 +20,10 @@ var pool *pgxpool.Pool
 func main() {
 	var err error
 	pool, err = pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	// ensure history table
 	pool.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS sql_history (
 		id SERIAL PRIMARY KEY,
 		user_id TEXT,
@@ -29,9 +32,9 @@ func main() {
 	)`)
 
 	r := chi.NewRouter()
-	r.Post("/import", importHandler)
 	r.Get("/sql", runSQLHandler)
 	r.Get("/history", historyHandler)
+	r.Post("/import", importHandler)
 	log.Println("SQL Editor on :3007")
 	log.Fatal(http.ListenAndServe(":3007", r))
 }
@@ -49,14 +52,12 @@ func runSQLHandler(w http.ResponseWriter, r *http.Request) {
 	userID := extractUserID(r)
 	rows, err := pool.Query(context.Background(), query)
 	if err != nil {
-		// log failure
 		pool.Exec(context.Background(), `INSERT INTO sql_history (user_id, query) VALUES ($1,$2)`, userID, query)
 		http.Error(w, err.Error(), 400)
 		return
 	}
 	defer rows.Close()
 
-	// log success
 	pool.Exec(context.Background(), `INSERT INTO sql_history (user_id, query) VALUES ($1,$2)`, userID, query)
 
 	cols := rows.FieldDescriptions()
@@ -75,11 +76,13 @@ func runSQLHandler(w http.ResponseWriter, r *http.Request) {
 func historyHandler(w http.ResponseWriter, r *http.Request) {
 	userID := extractUserID(r)
 	limit := r.URL.Query().Get("limit")
-	if limit == "" { limit = "10" }
+	if limit == "" {
+		limit = "10"
+	}
 	rows, _ := pool.Query(context.Background(),
 		`SELECT query, created_at FROM sql_history WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
 	defer rows.Close()
-	history := []map[string]interface{}{}
+	var history []map[string]interface{}
 	for rows.Next() {
 		var query string
 		var createdAt time.Time
@@ -89,22 +92,16 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(history)
 }
 
-import (
-	"io"
-	"net/http"
-	"os/exec"
-)
-
 func importHandler(w http.ResponseWriter, r *http.Request) {
-	r.ParseMultipartForm(10 << 20) // 10 MB
+	r.ParseMultipartForm(10 << 20)
 	file, _, err := r.FormFile("sqlfile")
 	if err != nil {
-		http.Error(w, "missing file", 400)
+		http.Error(w, `{"error":"missing sqlfile"}`, 400)
 		return
 	}
 	defer file.Close()
 	data, _ := io.ReadAll(file)
-	// Execute via psql (more reliable than Go driver for multi‑statement)
+
 	cmd := exec.Command("psql", os.Getenv("DATABASE_URL"), "-c", string(data))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -113,5 +110,5 @@ func importHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		return
 	}
-	w.Write([]byte("migration successful"))
+	w.Write([]byte(`{"status":"migration successful"}`))
 }
