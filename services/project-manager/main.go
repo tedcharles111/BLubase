@@ -31,11 +31,19 @@ func main() {
 	}
 
 	r := chi.NewRouter()
+
+	// Project management (authenticated)
 	r.Post("/projects", createProjectHandler)
 	r.Get("/projects", listProjectsHandler)
+
+	// Project-scoped user management (for the developer)
 	r.Get("/projects/{ref}/users", listProjectUsersHandler)
 	r.Post("/projects/{ref}/users", addProjectUserHandler)
 	r.Delete("/projects/{ref}/users/{id}", deleteProjectUserHandler)
+
+	// Project-scoped AUTH (for end‑users of a project)
+	r.Post("/projects/{ref}/auth/signup", projectSignupHandler)
+	r.Post("/projects/{ref}/auth/login", projectLoginHandler)
 
 	log.Println("Project manager on :3002")
 	log.Fatal(http.ListenAndServe(":3002", r))
@@ -66,6 +74,8 @@ func getProjectRef(r *http.Request) string {
 	return ref
 }
 
+// ------------------ Developer project management ------------------
+
 func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 	userID := extractUserID(r)
 	if userID == "" {
@@ -87,7 +97,7 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 	})
 	anonKey, _ := anonToken.SignedString(jwtSignKey)
 
-	// Create project's own user table
+	// Create the project's own users table
 	tableName := fmt.Sprintf("project_%s_users", refStr)
 	_, _ = controlDB.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS `+tableName+` (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -138,31 +148,25 @@ func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(projects)
 }
 
+// ------------------ Developer user management for a project ------------------
+
 func listProjectUsersHandler(w http.ResponseWriter, r *http.Request) {
 	ref := getProjectRef(r)
 	tableName := fmt.Sprintf("project_%s_users", ref)
-	query := fmt.Sprintf(
-		`SELECT id, email, phone, created_at FROM %s
-		 UNION ALL
-		 SELECT id, email, NULL as phone, created_at FROM public.users_view
-		 ORDER BY created_at DESC`, tableName)
-
-	rows, err := controlDB.Query(context.Background(), query)
+	// Return only the project's own users
+	rows, err := controlDB.Query(context.Background(),
+		`SELECT id, email, phone, created_at FROM `+tableName+` ORDER BY created_at DESC`)
 	if err != nil {
-		// fallback to only project users if public.users_view doesn't exist
-		rows, _ = controlDB.Query(context.Background(),
-			`SELECT id, email, phone, created_at FROM `+tableName+` ORDER BY created_at DESC`)
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
 	}
 	defer rows.Close()
-
 	var users []map[string]interface{}
 	for rows.Next() {
 		var id, email, phone string
 		var createdAt time.Time
 		rows.Scan(&id, &email, &phone, &createdAt)
-		users = append(users, map[string]interface{}{
-			"id": id, "email": email, "phone": phone, "created_at": createdAt,
-		})
+		users = append(users, map[string]interface{}{"id": id, "email": email, "phone": phone, "created_at": createdAt})
 	}
 	if users == nil {
 		users = []map[string]interface{}{}
@@ -205,4 +209,58 @@ func deleteProjectUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Write([]byte(`{"status":"deleted"}`))
+}
+
+// ------------------ Project-scoped AUTH (for end‑users) ------------------
+
+func projectSignupHandler(w http.ResponseWriter, r *http.Request) {
+	ref := getProjectRef(r)
+	tableName := fmt.Sprintf("project_%s_users", ref)
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		Phone    string `json:"phone"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Email == "" || req.Password == "" {
+		http.Error(w, `{"error":"email and password required"}`, 400)
+		return
+	}
+	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	_, err := controlDB.Exec(context.Background(),
+		`INSERT INTO `+tableName+` (email, password_hash, phone) VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING`,
+		req.Email, string(hashed), req.Phone)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+	w.Write([]byte(`{"message":"signup successful"}`))
+}
+
+func projectLoginHandler(w http.ResponseWriter, r *http.Request) {
+	ref := getProjectRef(r)
+	tableName := fmt.Sprintf("project_%s_users", ref)
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Email == "" || req.Password == "" {
+		http.Error(w, `{"error":"email and password required"}`, 400)
+		return
+	}
+	var userID, hashed string
+	err := controlDB.QueryRow(context.Background(),
+		`SELECT id, password_hash FROM `+tableName+` WHERE email=$1`, req.Email).Scan(&userID, &hashed)
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(hashed), []byte(req.Password)) != nil {
+		http.Error(w, `{"error":"invalid credentials"}`, 401)
+		return
+	}
+	claims := jwt.MapClaims{
+		"sub": userID, "email": req.Email, "ref": ref,
+		"iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, _ := token.SignedString(jwtSignKey)
+	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
 }
