@@ -26,7 +26,9 @@ var (
 func main() {
 	var err error
 	controlDB, err = pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	r := chi.NewRouter()
 	r.Post("/projects", createProjectHandler)
@@ -34,23 +36,29 @@ func main() {
 	r.Get("/projects/{ref}/users", listProjectUsersHandler)
 	r.Post("/projects/{ref}/users", addProjectUserHandler)
 	r.Delete("/projects/{ref}/users/{id}", deleteProjectUserHandler)
+
 	log.Println("Project manager on :3002")
 	log.Fatal(http.ListenAndServe(":3002", r))
 }
 
 func extractUserID(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") { return "" }
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return ""
+	}
 	tokenStr := strings.TrimPrefix(auth, "Bearer ")
 	claims := jwt.MapClaims{}
-	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) { return jwtSignKey, nil })
-	if err != nil { return "" }
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+		return jwtSignKey, nil
+	})
+	if err != nil {
+		return ""
+	}
 	sub, _ := claims["sub"].(string)
 	return sub
 }
 
 func getProjectRef(r *http.Request) string {
-	// First try URL param, then x-project-ref header
 	ref := chi.URLParam(r, "ref")
 	if ref == "" {
 		ref = r.Header.Get("x-project-ref")
@@ -60,10 +68,16 @@ func getProjectRef(r *http.Request) string {
 
 func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 	userID := extractUserID(r)
-	if userID == "" { http.Error(w, `{"error":"unauthorized"}`, 401); return }
+	if userID == "" {
+		http.Error(w, `{"error":"unauthorized"}`, 401)
+		return
+	}
 	var req struct{ Name string }
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Name == "" { http.Error(w, `{"error":"name required"}`, 400); return }
+	if req.Name == "" {
+		http.Error(w, `{"error":"name required"}`, 400)
+		return
+	}
 	ref := make([]byte, 6)
 	rand.Read(ref)
 	refStr := base64.URLEncoding.EncodeToString(ref)[:6]
@@ -73,14 +87,13 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 	})
 	anonKey, _ := anonToken.SignedString(jwtSignKey)
 
+	// Create project's own user table
 	tableName := fmt.Sprintf("project_%s_users", refStr)
-	controlDB.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS `+tableName+` (
+	_, _ = controlDB.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS `+tableName+` (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		email TEXT UNIQUE,
 		password_hash TEXT,
 		phone TEXT,
-		mfa_enabled BOOLEAN DEFAULT false,
-		mfa_secret TEXT,
 		created_at TIMESTAMPTZ DEFAULT now()
 	)`)
 
@@ -88,7 +101,10 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 	err := controlDB.QueryRow(context.Background(),
 		`INSERT INTO projects (name, ref, owner_id, anon_key) VALUES ($1,$2,$3,$4) RETURNING id`,
 		req.Name, refStr, userID, anonKey).Scan(&projectID)
-	if err != nil { http.Error(w, `{"error":"database error"}`, 500); return }
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"id": projectID, "name": req.Name, "ref": refStr,
 		"anon_key": anonKey, "status": "active", "region": "us-east-1",
@@ -97,9 +113,16 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 
 func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 	userID := extractUserID(r)
-	if userID == "" { json.NewEncoder(w).Encode([]interface{}{}); return }
-	rows, _ := controlDB.Query(context.Background(),
+	if userID == "" {
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
+	}
+	rows, err := controlDB.Query(context.Background(),
 		`SELECT id, name, ref, anon_key, created_at FROM projects WHERE owner_id=$1`, userID)
+	if err != nil {
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
+	}
 	defer rows.Close()
 	var projects []map[string]interface{}
 	for rows.Next() {
@@ -107,8 +130,9 @@ func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 		var createdAt time.Time
 		rows.Scan(&id, &name, &ref, &anonKey, &createdAt)
 		projects = append(projects, map[string]interface{}{
-			"id": id, "name": name, "ref": ref, "anon_key": anonKey,
-			"status": "active", "region": "us-east-1", "created_at": createdAt.Format(time.RFC3339),
+			"id": id, "name": name, "ref": ref,
+			"anon_key": anonKey, "status": "active", "region": "us-east-1",
+			"created_at": createdAt.Format(time.RFC3339),
 		})
 	}
 	json.NewEncoder(w).Encode(projects)
@@ -117,14 +141,31 @@ func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 func listProjectUsersHandler(w http.ResponseWriter, r *http.Request) {
 	ref := getProjectRef(r)
 	tableName := fmt.Sprintf("project_%s_users", ref)
-	rows, _ := controlDB.Query(context.Background(), `SELECT id, email, phone, created_at FROM `+tableName+` ORDER BY created_at DESC`)
+	query := fmt.Sprintf(
+		`SELECT id, email, phone, created_at FROM %s
+		 UNION ALL
+		 SELECT id, email, NULL as phone, created_at FROM public.users_view
+		 ORDER BY created_at DESC`, tableName)
+
+	rows, err := controlDB.Query(context.Background(), query)
+	if err != nil {
+		// fallback to only project users if public.users_view doesn't exist
+		rows, _ = controlDB.Query(context.Background(),
+			`SELECT id, email, phone, created_at FROM `+tableName+` ORDER BY created_at DESC`)
+	}
 	defer rows.Close()
+
 	var users []map[string]interface{}
 	for rows.Next() {
 		var id, email, phone string
 		var createdAt time.Time
 		rows.Scan(&id, &email, &phone, &createdAt)
-		users = append(users, map[string]interface{}{"id": id, "email": email, "phone": phone, "created_at": createdAt})
+		users = append(users, map[string]interface{}{
+			"id": id, "email": email, "phone": phone, "created_at": createdAt,
+		})
+	}
+	if users == nil {
+		users = []map[string]interface{}{}
 	}
 	json.NewEncoder(w).Encode(users)
 }
@@ -132,14 +173,24 @@ func listProjectUsersHandler(w http.ResponseWriter, r *http.Request) {
 func addProjectUserHandler(w http.ResponseWriter, r *http.Request) {
 	ref := getProjectRef(r)
 	tableName := fmt.Sprintf("project_%s_users", ref)
-	var req struct{ Email, Password, Phone string }
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		Phone    string `json:"phone"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Email == "" || req.Password == "" { http.Error(w, `{"error":"email and password required"}`, 400); return }
+	if req.Email == "" || req.Password == "" {
+		http.Error(w, `{"error":"email and password required"}`, 400)
+		return
+	}
 	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	_, err := controlDB.Exec(context.Background(),
 		`INSERT INTO `+tableName+` (email, password_hash, phone) VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING`,
 		req.Email, string(hashed), req.Phone)
-	if err != nil { http.Error(w, `{"error":"database error"}`, 500); return }
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
 	w.Write([]byte(`{"status":"created"}`))
 }
 
@@ -147,39 +198,11 @@ func deleteProjectUserHandler(w http.ResponseWriter, r *http.Request) {
 	ref := getProjectRef(r)
 	userID := chi.URLParam(r, "id")
 	tableName := fmt.Sprintf("project_%s_users", ref)
-	controlDB.Exec(context.Background(), `DELETE FROM `+tableName+` WHERE id=$1`, userID)
-	w.Write([]byte(`{"status":"deleted"}`))
-}
-
-// Overwrite listProjectUsersHandler to union project users + public users
-func init() {
-	// replace the existing function at startup
-	listProjectUsersHandler = func(w http.ResponseWriter, r *http.Request) {
-		ref := getProjectRef(r)
-		tableName := fmt.Sprintf("project_%s_users", ref)
-
-		// Query both tables and combine
-		query := fmt.Sprintf(
-			`SELECT id, email, phone, created_at FROM %s
-			 UNION ALL
-			 SELECT id, email, NULL as phone, created_at FROM public.users
-			 ORDER BY created_at DESC`, tableName)
-
-		rows, err := controlDB.Query(context.Background(), query)
-		if err != nil {
-			// fallback to only project users if public.users doesn't exist
-			rows, _ = controlDB.Query(context.Background(),
-				`SELECT id, email, phone, created_at FROM `+tableName+` ORDER BY created_at DESC`)
-		}
-		defer rows.Close()
-		var users []map[string]interface{}
-		for rows.Next() {
-			var id, email, phone string
-			var createdAt time.Time
-			rows.Scan(&id, &email, &phone, &createdAt)
-			users = append(users, map[string]interface{}{"id": id, "email": email, "phone": phone, "created_at": createdAt})
-		}
-		if users == nil { users = []map[string]interface{}{} }
-		json.NewEncoder(w).Encode(users)
+	_, err := controlDB.Exec(context.Background(),
+		`DELETE FROM `+tableName+` WHERE id=$1`, userID)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
 	}
+	w.Write([]byte(`{"status":"deleted"}`))
 }
