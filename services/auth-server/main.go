@@ -393,7 +393,7 @@ func listOAuthProvidersHandler(w http.ResponseWriter, r *http.Request) {
 		var en, sn, an bool
 		rows.Scan(&p, &cid, &csecret, &en, &sn, &an, &cb)
 		providers = append(providers, map[string]interface{}{
-			"provider": p, "client_id": cid, "client_secret": "***", "enabled": en,
+			"provider": p, "client_id": cid, "client_secret": csecret, "enabled": en,
 			"skip_nonce_check": sn, "allow_users_without_email": an, "callback_url": cb,
 		})
 	}
