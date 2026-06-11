@@ -38,6 +38,8 @@ func main() {
 
 	// Project-scoped user management (for the developer)
 	r.Get("/projects/{ref}/users", listProjectUsersHandler)
+	r.Get("/projects/{ref}/auth-settings", getProjectAuthSettingsHandler)
+	r.Put("/projects/{ref}/auth-settings", updateProjectAuthSettingsHandler)
 	r.Post("/projects/{ref}/users", addProjectUserHandler)
 	r.Delete("/projects/{ref}/users/{id}", deleteProjectUserHandler)
 
@@ -276,4 +278,50 @@ func projectLoginHandler(w http.ResponseWriter, r *http.Request) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := token.SignedString(jwtSignKey)
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+}
+
+// ---------- Project Auth Settings ----------
+
+func getProjectAuthSettingsHandler(w http.ResponseWriter, r *http.Request) {
+	ref := getProjectRef(r)
+	var allowSignups, allowManual, allowAnon, confirmEmail bool
+	err := controlDB.QueryRow(context.Background(),
+		`SELECT allow_signups, allow_manual_linking, allow_anonymous_signins, confirm_email FROM project_auth_settings WHERE project_ref=$1`, ref).
+		Scan(&allowSignups, &allowManual, &allowAnon, &confirmEmail)
+	if err != nil {
+		// return defaults
+		allowSignups = true
+		allowManual = true
+		allowAnon = false
+		confirmEmail = false
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"allow_signups":           allowSignups,
+		"allow_manual_linking":    allowManual,
+		"allow_anonymous_signins": allowAnon,
+		"confirm_email":           confirmEmail,
+	})
+}
+
+func updateProjectAuthSettingsHandler(w http.ResponseWriter, r *http.Request) {
+	ref := getProjectRef(r)
+	var req struct {
+		AllowSignups          bool `json:"allow_signups"`
+		AllowManualLinking    bool `json:"allow_manual_linking"`
+		AllowAnonymousSignins bool `json:"allow_anonymous_signins"`
+		ConfirmEmail          bool `json:"confirm_email"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	_, err := controlDB.Exec(context.Background(),
+		`INSERT INTO project_auth_settings (project_ref, allow_signups, allow_manual_linking, allow_anonymous_signins, confirm_email)
+		 VALUES ($1,$2,$3,$4,$5)
+		 ON CONFLICT (project_ref) DO UPDATE SET
+		 allow_signups=$2, allow_manual_linking=$3, allow_anonymous_signins=$4, confirm_email=$5`,
+		ref, req.AllowSignups, req.AllowManualLinking, req.AllowAnonymousSignins, req.ConfirmEmail)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+	w.Write([]byte(`{"status":"updated"}`))
 }
