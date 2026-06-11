@@ -153,7 +153,6 @@ func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 func listProjectUsersHandler(w http.ResponseWriter, r *http.Request) {
 	ref := getProjectRef(r)
 	tableName := fmt.Sprintf("project_%s_users", ref)
-	// Return only the project's own users
 	rows, err := controlDB.Query(context.Background(),
 		`SELECT id, email, phone, created_at FROM `+tableName+` ORDER BY created_at DESC`)
 	if err != nil {
@@ -234,7 +233,21 @@ func projectSignupHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
-	w.Write([]byte(`{"message":"signup successful"}`))
+
+	// Fetch the newly created user's ID
+	var newUserID string
+	err = controlDB.QueryRow(context.Background(),
+		`SELECT id FROM `+tableName+` WHERE email=$1`, req.Email).Scan(&newUserID)
+	if err != nil {
+		http.Error(w, `{"error":"user created but could not fetch ID"}`, 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "signup successful",
+		"userId":  newUserID,
+	})
 }
 
 func projectLoginHandler(w http.ResponseWriter, r *http.Request) {
