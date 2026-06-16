@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/smtp"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
