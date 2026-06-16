@@ -189,14 +189,19 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	otp := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
-	redisClient.Set(context.Background(), "reset:"+req.Email, otp, 15*time.Minute)
-
-	err := sendEmail(req.Email, "Password Reset Code", fmt.Sprintf("Your Blubase password reset code is: %s", otp))
+	expiry := time.Now().Add(15 * time.Minute)
+	_, err := dbPool.Exec(context.Background(),
+		`UPDATE platform_users SET otp_code=$1, otp_expiry=$2 WHERE email=$3`,
+		otp, expiry, req.Email)
 	if err != nil {
-		log.Printf("Failed to send email: %v", err)
+		log.Printf("ERROR storing OTP: %v", err)
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
 	}
+	logActivity(r, "forgot_password", req.Email)
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "If that email exists, a reset code has been sent",
+		"otp":     otp,
 	})
 }
 
@@ -211,19 +216,19 @@ func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"email, otp, new_password required"}`, 400)
 		return
 	}
-	stored, _ := redisClient.Get(context.Background(), "reset:"+req.Email).Result()
-	if stored != req.OTP {
+	var storedOTP string
+	var expiry time.Time
+	err := dbPool.QueryRow(context.Background(),
+		`SELECT otp_code, otp_expiry FROM platform_users WHERE email=$1`,
+		req.Email).Scan(&storedOTP, &expiry)
+	if err != nil || storedOTP != req.OTP || time.Now().After(expiry) {
 		http.Error(w, `{"error":"invalid otp"}`, 401)
 		return
 	}
-	redisClient.Del(context.Background(), "reset:"+req.Email)
 	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
-	_, err := dbPool.Exec(context.Background(),
-		`UPDATE platform_users SET password_hash=$1 WHERE email=$2`, string(hashed), req.Email)
-	if err != nil {
-		http.Error(w, `{"error":"database error"}`, 500)
-		return
-	}
+	dbPool.Exec(context.Background(),
+		`UPDATE platform_users SET password_hash=$1, otp_code=NULL, otp_expiry=NULL WHERE email=$2`,
+		string(hashed), req.Email)
 	logActivity(r, "reset_password", req.Email)
 	w.Write([]byte(`{"message":"password updated"}`))
 }
