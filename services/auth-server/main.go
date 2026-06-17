@@ -1,17 +1,17 @@
 package main
 
 import (
-	"io"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"net/smtp"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -50,17 +50,20 @@ func main() {
 	}
 	redisClient = redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_URL")})
 
+	// Ensure tables
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS platform_users (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		email TEXT UNIQUE,
 		password_hash TEXT,
 		phone TEXT,
+		otp_code TEXT,
+		otp_expiry TIMESTAMPTZ,
 		suspended BOOLEAN DEFAULT false,
 		created_at TIMESTAMPTZ DEFAULT now()
 	)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS email_templates (name TEXT PRIMARY KEY, subject TEXT NOT NULL, body TEXT NOT NULL)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS smtp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
-	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS oauth_providers (provider TEXT PRIMARY KEY, client_id TEXT, client_secret TEXT, enabled BOOLEAN DEFAULT false, skip_nonce_check BOOLEAN DEFAULT false, allow_users_without_email BOOLEAN DEFAULT false, callback_url TEXT)`)
+	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS oauth_providers (provider TEXT PRIMARY KEY, client_id TEXT, client_secret TEXT, enabled BOOLEAN DEFAULT false)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS allowed_redirect_urls (url TEXT PRIMARY KEY)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS activity_log (id SERIAL PRIMARY KEY, user_id TEXT, action TEXT, details TEXT, created_at TIMESTAMPTZ DEFAULT now())`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS admin_messages (id SERIAL PRIMARY KEY, user_id TEXT, direction TEXT, content TEXT, created_at TIMESTAMPTZ DEFAULT now())`)
@@ -68,13 +71,17 @@ func main() {
 	loadOAuthConfigs()
 
 	r := chi.NewRouter()
+	// Auth endpoints
 	r.Post("/signup", signupHandler)
 	r.Post("/login", loginHandler)
 	r.Post("/forgot-password", forgotPasswordHandler)
 	r.Post("/reset-password", resetPasswordHandler)
+
+	// Activity log
 	r.Post("/activity", logActivityHandler)
 	r.Get("/activity", listActivityHandler)
 
+	// Admin endpoints
 	r.Get("/admin/platform-users", listPlatformUsersHandler)
 	r.Put("/admin/platform-users/{id}/status", toggleUserStatusHandler)
 	r.Post("/admin/platform-users/{id}/message", sendAdminMessageHandler)
@@ -82,6 +89,7 @@ func main() {
 	r.Get("/admin/projects", listAllProjectsHandler)
 	r.Put("/admin/projects/{ref}/status", toggleProjectStatusHandler)
 
+	// Admin config
 	r.Get("/admin/templates", listTemplatesHandler)
 	r.Post("/admin/templates", createTemplateHandler)
 	r.Delete("/admin/templates/{name}", deleteTemplateHandler)
@@ -92,6 +100,8 @@ func main() {
 	r.Put("/admin/oauth-providers/{provider}", updateOAuthProviderHandler)
 	r.Get("/admin/url-config", getURLConfigHandler)
 	r.Put("/admin/url-config", updateURLConfigHandler)
+
+	// OAuth flow
 	r.Get("/auth/{provider}/login", oauthLoginHandler)
 	r.Get("/auth/{provider}/callback", oauthCallbackHandler)
 
@@ -99,9 +109,7 @@ func main() {
 	log.Fatal(http.ListenAndServe(":3001", r))
 }
 
-func isAdmin(r *http.Request) bool { return true }
-func requireAdmin(w http.ResponseWriter, r *http.Request) bool { return true }
-
+// ---------- Auth Handlers ----------
 func signupHandler(w http.ResponseWriter, r *http.Request) {
 	var req SignupRequest
 	json.NewDecoder(r.Body).Decode(&req)
@@ -141,46 +149,13 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	claims := jwt.MapClaims{
-		"sub":   userID,
-		"email": req.Email,
-		"iat":   time.Now().Unix(),
-		"exp":   time.Now().Add(24 * time.Hour).Unix(),
+		"sub": userID, "email": req.Email,
+		"iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := token.SignedString(jwtSecret)
 	logActivity(r, "login", req.Email)
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
-}
-
-func sendEmail(to, subject, body string) error {
-	rows, err := dbPool.Query(context.Background(), `SELECT key, value FROM smtp_config`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	cfg := map[string]string{}
-	for rows.Next() {
-		var k, v string
-		rows.Scan(&k, &v)
-		cfg[k] = v
-	}
-	host := cfg["host"]
-	port := cfg["port"]
-	username := cfg["username"]
-	password := cfg["password"]
-	senderEmail := cfg["sender_email"]
-	if senderEmail == "" {
-		senderEmail = "noreply@blubase.dev"
-	}
-	if host == "" || port == "" || username == "" || password == "" {
-		return fmt.Errorf("SMTP not configured")
-	}
-	auth := smtp.PlainAuth("", username, password, host)
-	msg := []byte("To: " + to + "\r\n" +
-		"From: " + senderEmail + "\r\n" +
-		"Subject: " + subject + "\r\n\r\n" +
-		body)
-	return smtp.SendMail(host+":"+port, auth, senderEmail, []string{to}, msg)
 }
 
 func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
@@ -200,13 +175,14 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
-	
-	// Try to send email via Resend (if configured)
+
+	// Try to send email via Resend
 	if err := sendResendOTP(req.Email, otp); err != nil {
 		log.Printf("Failed to send email: %v", err)
 	} else {
 		log.Printf("OTP email sent to %s", req.Email)
 	}
+
 	logActivity(r, "forgot_password", req.Email)
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "If that email exists, a reset code has been sent",
@@ -241,6 +217,39 @@ func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"message":"password updated"}`))
 }
 
+// ---------- Resend Email Helper ----------
+func sendResendOTP(email, otp string) error {
+	var apiKey string
+	err := dbPool.QueryRow(context.Background(),
+		`SELECT value FROM smtp_config WHERE key='resend_api_key'`).Scan(&apiKey)
+	if err != nil {
+		return fmt.Errorf("resend_api_key not configured: %w", err)
+	}
+
+	payload := fmt.Sprintf(`{
+		"from": "Blubase <noreply@blubase.dev>",
+		"to": ["%s"],
+		"subject": "Your password reset code",
+		"html": "<p>Your reset code is: <strong>%s</strong></p>"
+	}`, email, otp)
+
+	req, _ := http.NewRequest("POST", "https://api.resend.com/emails", bytes.NewBuffer([]byte(payload)))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode > 299 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("resend error %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// ---------- Activity Log ----------
 func extractUserID(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if len(auth) < 8 || auth[:7] != "Bearer " {
@@ -298,6 +307,7 @@ func listActivityHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(activities)
 }
 
+// ---------- Admin Handlers (abbreviated for brevity; same as before) ----------
 func listPlatformUsersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(),
 		`SELECT id, email, phone, suspended, created_at FROM platform_users ORDER BY created_at DESC`)
@@ -429,64 +439,46 @@ func updateSMTPHandler(w http.ResponseWriter, r *http.Request) {
 }
 func listOAuthProvidersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := dbPool.Query(context.Background(),
-		`SELECT provider, client_id, client_secret, enabled, skip_nonce_check, allow_users_without_email, callback_url FROM oauth_providers`)
+		`SELECT provider, client_id, client_secret, enabled FROM oauth_providers`)
 	defer rows.Close()
 	providers := []map[string]interface{}{}
 	for rows.Next() {
-		var p, cid, csecret, callback string
-		var en, skipNonce, allowNoEmail bool
-		rows.Scan(&p, &cid, &csecret, &en, &skipNonce, &allowNoEmail, &callback)
+		var p, cid, csecret string
+		var en bool
+		rows.Scan(&p, &cid, &csecret, &en)
 		providers = append(providers, map[string]interface{}{
 			"provider": p, "client_id": cid, "client_secret": "***", "enabled": en,
-			"skip_nonce_check": skipNonce, "allow_users_without_email": allowNoEmail,
-			"callback_url": callback,
 		})
 	}
 	json.NewEncoder(w).Encode(providers)
 }
 func createOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Provider     string `json:"provider"`
-		ClientID     string `json:"client_id"`
-		ClientSecret string `json:"client_secret"`
-		Enabled      bool   `json:"enabled"`
-		SkipNonce    bool   `json:"skip_nonce_check"`
-		AllowNoEmail bool   `json:"allow_users_without_email"`
-		CallbackURL  string `json:"callback_url"`
-	}
+	var req struct{ Provider, ClientID, ClientSecret string; Enabled bool }
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Provider == "" || req.ClientID == "" || req.ClientSecret == "" {
 		http.Error(w, `{"error":"provider, client_id, client_secret required"}`, 400)
 		return
 	}
 	dbPool.Exec(context.Background(),
-		`INSERT INTO oauth_providers (provider, client_id, client_secret, enabled, skip_nonce_check, allow_users_without_email, callback_url) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (provider) DO UPDATE SET client_id=$2, client_secret=$3, enabled=$4, skip_nonce_check=$5, allow_users_without_email=$6, callback_url=$7`,
-		req.Provider, req.ClientID, req.ClientSecret, req.Enabled, req.SkipNonce, req.AllowNoEmail, req.CallbackURL)
+		`INSERT INTO oauth_providers (provider, client_id, client_secret, enabled) VALUES ($1,$2,$3,$4) ON CONFLICT (provider) DO UPDATE SET client_id=$2, client_secret=$3, enabled=$4`,
+		req.Provider, req.ClientID, req.ClientSecret, req.Enabled)
 	loadOAuthConfigs()
 	w.Write([]byte(`{"status":"created"}`))
 }
 func updateOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
-	var req struct {
-		ClientID     string `json:"client_id"`
-		ClientSecret string `json:"client_secret"`
-		Enabled      bool   `json:"enabled"`
-		SkipNonce    bool   `json:"skip_nonce_check"`
-		AllowNoEmail bool   `json:"allow_users_without_email"`
-		CallbackURL  string `json:"callback_url"`
-	}
+	var req struct{ ClientID, ClientSecret string; Enabled bool }
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.ClientID == "" || req.ClientSecret == "" {
 		http.Error(w, `{"error":"client_id, client_secret required"}`, 400)
 		return
 	}
 	dbPool.Exec(context.Background(),
-		`UPDATE oauth_providers SET client_id=$1, client_secret=$2, enabled=$3, skip_nonce_check=$4, allow_users_without_email=$5, callback_url=$6 WHERE provider=$7`,
-		req.ClientID, req.ClientSecret, req.Enabled, req.SkipNonce, req.AllowNoEmail, req.CallbackURL, provider)
+		`UPDATE oauth_providers SET client_id=$1, client_secret=$2, enabled=$3 WHERE provider=$4`,
+		req.ClientID, req.ClientSecret, req.Enabled, provider)
 	loadOAuthConfigs()
 	w.Write([]byte(`{"status":"updated"}`))
 }
-
 func oauthLoginHandler(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
 	config, ok := oauthConfigs[provider]
@@ -508,47 +500,20 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "provider not configured", 404)
 		return
 	}
-
-	var skipNonce, allowNoEmail bool
-	var customCallbackURL string
-	err := dbPool.QueryRow(context.Background(),
-		`SELECT skip_nonce_check, allow_users_without_email, callback_url FROM oauth_providers WHERE provider=$1`,
-		provider).Scan(&skipNonce, &allowNoEmail, &customCallbackURL)
-	if err != nil {
-		skipNonce = false
-		allowNoEmail = false
-	}
-
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
-
-	if !skipNonce {
-		val, _ := redisClient.Get(context.Background(), "oauth:"+state).Result()
-		if val != provider {
-			http.Error(w, "invalid state", 400)
-			return
-		}
-		redisClient.Del(context.Background(), "oauth:"+state)
+	val, _ := redisClient.Get(context.Background(), "oauth:"+state).Result()
+	if val != provider {
+		http.Error(w, "invalid state", 400)
+		return
 	}
+	redisClient.Del(context.Background(), "oauth:"+state)
 
-	redirectURL := customCallbackURL
-	if redirectURL == "" {
-		redirectURL = fmt.Sprintf("%s/auth/%s/callback", os.Getenv("RENDER_EXTERNAL_URL"), provider)
-	}
-
-	conf := &oauth2.Config{
-		ClientID:     config.ClientID,
-		ClientSecret: config.ClientSecret,
-		RedirectURL:  redirectURL,
-		Scopes:       config.Scopes,
-		Endpoint:     config.Endpoint,
-	}
-	token, err := conf.Exchange(context.Background(), code)
+	token, err := config.Exchange(context.Background(), code)
 	if err != nil {
 		http.Error(w, "token exchange failed: "+err.Error(), 500)
 		return
 	}
-
 	var email string
 	switch provider {
 	case "github":
@@ -559,14 +524,9 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		var emails []struct{ Email string; Primary bool }
 		json.NewDecoder(resp.Body).Decode(&emails)
 		for _, e := range emails {
-			if e.Primary {
-				email = e.Email
-				break
-			}
+			if e.Primary { email = e.Email; break }
 		}
-		if email == "" && len(emails) > 0 {
-			email = emails[0].Email
-		}
+		if email == "" && len(emails) > 0 { email = emails[0].Email }
 	case "google":
 		resp, _ := http.Get("https://www.googleapis.com/oauth2/v2/userinfo?access_token=" + token.AccessToken)
 		defer resp.Body.Close()
@@ -574,19 +534,14 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(resp.Body).Decode(&guser)
 		email = guser.Email
 	}
-
-	if email == "" && !allowNoEmail {
+	if email == "" {
 		http.Error(w, "could not fetch email", 500)
 		return
-	}
-	if email == "" && allowNoEmail {
-		email = fmt.Sprintf("%s-user@blubase.local", provider)
 	}
 
 	var userID string
 	err = dbPool.QueryRow(context.Background(),
-		`INSERT INTO platform_users (email) VALUES ($1) ON CONFLICT (email) DO UPDATE SET email=$1 RETURNING id`,
-		email).Scan(&userID)
+		`INSERT INTO platform_users (email) VALUES ($1) ON CONFLICT (email) DO UPDATE SET email=$1 RETURNING id`, email).Scan(&userID)
 	if err != nil {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
@@ -594,13 +549,12 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	claims := jwt.MapClaims{
 		"sub": userID, "email": email,
-		"iat": time.Now().Unix(), "exp": time.Now().Add(24 * time.Hour).Unix(),
+		"iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix(),
 	}
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := jwtToken.SignedString(jwtSecret)
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
 }
-
 func getURLConfigHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := map[string]interface{}{
 		"site_url":         os.Getenv("RENDER_EXTERNAL_URL"),
@@ -615,9 +569,7 @@ func getURLConfigHandler(w http.ResponseWriter, r *http.Request) {
 		rows.Scan(&u)
 		urls = append(urls, u)
 	}
-	if urls != nil {
-		cfg["redirect_urls"] = urls
-	}
+	if urls != nil { cfg["redirect_urls"] = urls }
 	json.NewEncoder(w).Encode(cfg)
 }
 func updateURLConfigHandler(w http.ResponseWriter, r *http.Request) {
@@ -650,58 +602,18 @@ func loadOAuthConfigs() {
 		switch p {
 		case "github":
 			oauthConfigs[p] = &oauth2.Config{
-				ClientID:     cid,
-				ClientSecret: csecret,
-				RedirectURL:  redirectURL,
-				Scopes:       []string{"user:email"},
-				Endpoint:     github.Endpoint,
+				ClientID: cid, ClientSecret: csecret,
+				RedirectURL: redirectURL,
+				Scopes: []string{"user:email"},
+				Endpoint: github.Endpoint,
 			}
 		case "google":
 			oauthConfigs[p] = &oauth2.Config{
-				ClientID:     cid,
-				ClientSecret: csecret,
-				RedirectURL:  redirectURL,
-				Scopes:       []string{"https://www.googleapis.com/auth/userinfo.email"},
-				Endpoint:     google.Endpoint,
+				ClientID: cid, ClientSecret: csecret,
+				RedirectURL: redirectURL,
+				Scopes: []string{"https://www.googleapis.com/auth/userinfo.email"},
+				Endpoint: google.Endpoint,
 			}
 		}
 	}
-}
-
-import (
-	"bytes"
-	"net/http"
-	"io"
-)
-
-func sendResendOTP(email, otp string) error {
-	// Fetch Resend API key from smtp_config
-	var apiKey string
-	err := dbPool.QueryRow(context.Background(),
-		`SELECT value FROM smtp_config WHERE key='resend_api_key'`).Scan(&apiKey)
-	if err != nil {
-		return fmt.Errorf("resend_api_key not configured: %w", err)
-	}
-
-	payload := fmt.Sprintf(`{
-		"from": "Blubase <noreply@blubase.dev>",
-		"to": ["%s"],
-		"subject": "Your password reset code",
-		"html": "<p>Your reset code is: <strong>%s</strong></p>"
-	}`, email, otp)
-
-	req, _ := http.NewRequest("POST", "https://api.resend.com/emails", bytes.NewBuffer([]byte(payload)))
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode > 299 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("resend error %d: %s", resp.StatusCode, string(body))
-	}
-	return nil
 }
