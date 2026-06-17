@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -32,9 +31,9 @@ func main() {
 	)`)
 
 	r := chi.NewRouter()
-	r.Get("/sql", runSQLHandler)
+	r.Get("/sql", runSQLHandler)          // existing GET
+	r.Post("/sql", runSQLHandlerPOST)    // new POST (accepts JSON body)
 	r.Get("/history", historyHandler)
-	r.Post("/import", importHandler)
 	log.Println("SQL Editor on :3007")
 	log.Fatal(http.ListenAndServe(":3007", r))
 }
@@ -49,6 +48,23 @@ func extractUserID(r *http.Request) string {
 
 func runSQLHandler(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("query")
+	executeQuery(w, r, query)
+}
+
+func runSQLHandlerPOST(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query string `json:"query"`
+	}
+	body, _ := io.ReadAll(r.Body)
+	json.Unmarshal(body, &req)
+	executeQuery(w, r, req.Query)
+}
+
+func executeQuery(w http.ResponseWriter, r *http.Request, query string) {
+	if query == "" {
+		http.Error(w, `{"error":"query required"}`, 400)
+		return
+	}
 	userID := extractUserID(r)
 	rows, err := pool.Query(context.Background(), query)
 	if err != nil {
@@ -90,25 +106,4 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 		history = append(history, map[string]interface{}{"query": query, "created_at": createdAt})
 	}
 	json.NewEncoder(w).Encode(history)
-}
-
-func importHandler(w http.ResponseWriter, r *http.Request) {
-	r.ParseMultipartForm(10 << 20)
-	file, _, err := r.FormFile("sqlfile")
-	if err != nil {
-		http.Error(w, `{"error":"missing sqlfile"}`, 400)
-		return
-	}
-	defer file.Close()
-	data, _ := io.ReadAll(file)
-
-	cmd := exec.Command("psql", os.Getenv("DATABASE_URL"), "-c", string(data))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write(out)
-		w.WriteHeader(500)
-		return
-	}
-	w.Write([]byte(`{"status":"migration successful"}`))
 }
