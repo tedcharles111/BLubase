@@ -219,6 +219,11 @@ func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 // ---------- Resend Email Helper ----------
 func sendResendOTP(email, otp string) error {
 	var apiKey string
+	var fromName, fromEmail string
+	_ = dbPool.QueryRow(context.Background(), `SELECT value FROM smtp_config WHERE key=from_name`).Scan(&fromName)
+	_ = dbPool.QueryRow(context.Background(), `SELECT value FROM smtp_config WHERE key=from_email`).Scan(&fromEmail)
+	if fromName == "" { fromName = "Blubase" }
+	if fromEmail == "" { fromEmail = "noreply@blubase.dev" }
 	err := dbPool.QueryRow(context.Background(),
 		`SELECT value FROM smtp_config WHERE key='resend_api_key'`).Scan(&apiKey)
 	if err != nil {
@@ -226,7 +231,7 @@ func sendResendOTP(email, otp string) error {
 	}
 
 	payload := fmt.Sprintf(`{
-		"from": "Blubase <noreply@blubase.dev>",
+		"from": fmt.Sprintf("%s <%s>", fromName, fromEmail),
 		"to": ["%s"],
 		"subject": "Your password reset code",
 		"html": "<p>Your reset code is: <strong>%s</strong></p>"
