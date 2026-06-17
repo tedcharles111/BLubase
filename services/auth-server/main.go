@@ -198,10 +198,16 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
+	
+	// Try to send email via Resend (if configured)
+	if err := sendResendOTP(req.Email, otp); err != nil {
+		log.Printf("Failed to send email: %v", err)
+	} else {
+		log.Printf("OTP email sent to %s", req.Email)
+	}
 	logActivity(r, "forgot_password", req.Email)
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "If that email exists, a reset code has been sent",
-		"otp":     otp,
 	})
 }
 
@@ -658,4 +664,42 @@ func loadOAuthConfigs() {
 			}
 		}
 	}
+}
+
+import (
+	"bytes"
+	"net/http"
+	"io"
+)
+
+func sendResendOTP(email, otp string) error {
+	// Fetch Resend API key from smtp_config
+	var apiKey string
+	err := dbPool.QueryRow(context.Background(),
+		`SELECT value FROM smtp_config WHERE key='resend_api_key'`).Scan(&apiKey)
+	if err != nil {
+		return fmt.Errorf("resend_api_key not configured: %w", err)
+	}
+
+	payload := fmt.Sprintf(`{
+		"from": "Blubase <noreply@blubase.dev>",
+		"to": ["%s"],
+		"subject": "Your password reset code",
+		"html": "<p>Your reset code is: <strong>%s</strong></p>"
+	}`, email, otp)
+
+	req, _ := http.NewRequest("POST", "https://api.resend.com/emails", bytes.NewBuffer([]byte(payload)))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode > 299 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("resend error %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
