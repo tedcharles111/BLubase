@@ -493,7 +493,7 @@ func oauthLoginHandler(w http.ResponseWriter, r *http.Request) {
 	state := make([]byte, 16)
 	rand.Read(state)
 	stateStr := base64.URLEncoding.EncodeToString(state)
-	redisClient.Set(context.Background(), "oauth:"+stateStr, provider, 5*time.Minute)
+dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider) VALUES ($1,$2)`, stateStr, provider)
 	url := config.AuthCodeURL(stateStr)
 	http.Redirect(w, r, url, http.StatusFound)
 }
@@ -506,12 +506,13 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
-	val, _ := redisClient.Get(context.Background(), "oauth:"+state).Result()
-	if val != provider {
+var prov string
+	dbPool.QueryRow(context.Background(), `SELECT provider FROM oauth_states WHERE state=$1`, state).Scan(	val, _ := redisClient.Get(context.Background(), "oauth:"+state).Result()prov)
+if prov != provider {
 		http.Error(w, "invalid state", 400)
 		return
 	}
-	redisClient.Del(context.Background(), "oauth:"+state)
+dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
 
 	token, err := config.Exchange(context.Background(), code)
 	if err != nil {
