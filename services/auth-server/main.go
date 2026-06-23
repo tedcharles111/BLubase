@@ -506,13 +506,13 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
-var prov string
-	dbPool.QueryRow(context.Background(), `SELECT provider FROM oauth_states WHERE state=$1`, state).Scan(	val, _ := redisClient.Get(context.Background(), "oauth:"+state).Result()prov)
-if prov != provider {
+	var prov string
+	dbPool.QueryRow(context.Background(), `SELECT provider FROM oauth_states WHERE state=$1`, state).Scan(&prov)
+	if prov != provider {
 		http.Error(w, "invalid state", 400)
 		return
 	}
-dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
+	dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
 
 	token, err := config.Exchange(context.Background(), code)
 	if err != nil {
@@ -529,9 +529,14 @@ dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, sta
 		var emails []struct{ Email string; Primary bool }
 		json.NewDecoder(resp.Body).Decode(&emails)
 		for _, e := range emails {
-			if e.Primary { email = e.Email; break }
+			if e.Primary {
+				email = e.Email
+				break
+			}
 		}
-		if email == "" && len(emails) > 0 { email = emails[0].Email }
+		if email == "" && len(emails) > 0 {
+			email = emails[0].Email
+		}
 	case "google":
 		resp, _ := http.Get("https://www.googleapis.com/oauth2/v2/userinfo?access_token=" + token.AccessToken)
 		defer resp.Body.Close()
@@ -554,7 +559,7 @@ dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, sta
 
 	claims := jwt.MapClaims{
 		"sub": userID, "email": email,
-		"iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix(),
+		"iat": time.Now().Unix(), "exp": time.Now().Add(24 * time.Hour).Unix(),
 	}
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := jwtToken.SignedString(jwtSecret)
