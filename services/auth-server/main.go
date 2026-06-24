@@ -72,10 +72,10 @@ func main() {
 	r.Post("/login", loginHandler)
 	r.Post("/forgot-password", forgotPasswordHandler)
 	r.Post("/reset-password", resetPasswordHandler)
-	r.Get("/auth/google/login", googleLoginHandler)
-	r.Get("/auth/google/callback", googleCallbackHandler)
-	r.Get("/auth/github/login", githubLoginHandler)
-	r.Get("/auth/github/callback", githubCallbackHandler)
+	r.Get("/google/login", googleLoginHandler)
+	r.Get("/google/callback", googleCallbackHandler)
+	r.Get("/github/login", githubLoginHandler)
+	r.Get("/github/callback", githubCallbackHandler)
 
 	// OAuth flow
 
