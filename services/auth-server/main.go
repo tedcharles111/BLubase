@@ -278,6 +278,7 @@ func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	_ = dbPool.QueryRow(context.Background(),
 		`SELECT client_id, client_secret FROM project_oauth_providers WHERE project_ref=$1 AND provider='google'`, pref).Scan(&cid, &csecret)
 	cfg := &oauth2.Config{ClientID: cid, ClientSecret: csecret, Endpoint: google.Endpoint}
+	cfg.RedirectURL = fmt.Sprintf("%s/auth/google/callback", os.Getenv("RENDER_EXTERNAL_URL"))
 	token, err := cfg.Exchange(context.Background(), code)
 	if err != nil {
 		http.Error(w, "token exchange failed: "+err.Error(), 500)
@@ -343,6 +344,7 @@ func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	_ = dbPool.QueryRow(context.Background(),
 		`SELECT client_id, client_secret FROM project_oauth_providers WHERE project_ref=$1 AND provider='github'`, pref).Scan(&cid, &csecret)
 	cfg := &oauth2.Config{ClientID: cid, ClientSecret: csecret, Endpoint: github.Endpoint}
+	cfg.RedirectURL = fmt.Sprintf("%s/auth/github/callback", os.Getenv("RENDER_EXTERNAL_URL"))
 	token, err := cfg.Exchange(context.Background(), code)
 	if err != nil {
 		http.Error(w, "token exchange failed: "+err.Error(), 500)
