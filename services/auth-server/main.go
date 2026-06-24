@@ -36,8 +36,17 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Ensure tables (platform‑level, still needed for admin, etc.)
-	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS platform_users (…)`) // shortened for brevity
+	// Ensure tables
+	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS platform_users (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		email TEXT UNIQUE,
+		password_hash TEXT,
+		phone TEXT,
+		otp_code TEXT,
+		otp_expiry TIMESTAMPTZ,
+		suspended BOOLEAN DEFAULT false,
+		created_at TIMESTAMPTZ DEFAULT now()
+	)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS project_oauth_providers (
 		project_ref TEXT NOT NULL,
 		provider TEXT NOT NULL,
@@ -46,116 +55,359 @@ func main() {
 		enabled BOOLEAN DEFAULT false,
 		PRIMARY KEY (project_ref, provider)
 	)`)
+	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS oauth_states (
+		state TEXT PRIMARY KEY,
+		provider TEXT,
+		project_ref TEXT,
+		created_at TIMESTAMPTZ DEFAULT now()
+	)`)
+	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS email_templates (name TEXT PRIMARY KEY, subject TEXT NOT NULL, body TEXT NOT NULL)`)
+	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS smtp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
+	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS allowed_redirect_urls (url TEXT PRIMARY KEY)`)
+	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS activity_log (id SERIAL PRIMARY KEY, user_id TEXT, action TEXT, details TEXT, created_at TIMESTAMPTZ DEFAULT now())`)
+	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS admin_messages (id SERIAL PRIMARY KEY, user_id TEXT, direction TEXT, content TEXT, created_at TIMESTAMPTZ DEFAULT now())`)
 
 	r := chi.NewRouter()
 
-	// Platform auth
+	// Auth endpoints
 	r.Post("/signup", signupHandler)
 	r.Post("/login", loginHandler)
 	r.Post("/forgot-password", forgotPasswordHandler)
 	r.Post("/reset-password", resetPasswordHandler)
+
+	// OAuth flow (project‑scoped)
 	r.Get("/auth/{provider}/login", projectOAuthLoginHandler)
 	r.Get("/auth/{provider}/callback", projectOAuthCallbackHandler)
 
-
-	// OAuth flow (project‑scoped)
-
-	// Project‑scoped OAuth admin (requires x‑project‑ref header)
+	// Project‑scoped OAuth admin (requires x‑project‑ref header or ?project= query param)
 	r.Get("/admin/oauth-providers", listProjectOAuthProvidersHandler)
 	r.Post("/admin/oauth-providers", createProjectOAuthProviderHandler)
 	r.Put("/admin/oauth-providers/{provider}", updateProjectOAuthProviderHandler)
 	r.Delete("/admin/oauth-providers/{provider}", deleteProjectOAuthProviderHandler)
 
-	// … rest of admin endpoints (platform users, templates, etc.)
+	// Admin endpoints (platform)
+	r.Get("/admin/platform-users", listPlatformUsersHandler)
+	r.Put("/admin/platform-users/{id}/status", toggleUserStatusHandler)
+	r.Post("/admin/platform-users/{id}/message", sendAdminMessageHandler)
+	r.Get("/admin/platform-users/{id}/messages", getUserMessagesHandler)
+	r.Get("/admin/projects", listAllProjectsHandler)
+	r.Put("/admin/projects/{ref}/status", toggleProjectStatusHandler)
+	r.Get("/admin/templates", listTemplatesHandler)
+	r.Post("/admin/templates", createTemplateHandler)
+	r.Delete("/admin/templates/{name}", deleteTemplateHandler)
+	r.Get("/admin/smtp", getSMTPHandler)
+	r.Put("/admin/smtp", updateSMTPHandler)
+	r.Get("/admin/url-config", getURLConfigHandler)
+	r.Put("/admin/url-config", updateURLConfigHandler)
 
 	log.Println("Auth server on :3001")
 	log.Fatal(http.ListenAndServe(":3001", r))
 }
 
-// ---------- Helper: extract project ref from header ----------
+// ---------- Helpers ----------
 func getProjectRef(r *http.Request) string {
-	return r.Header.Get("x-project-ref")
+	ref := r.Header.Get("x-project-ref")
+	if ref == "" {
+		ref = r.URL.Query().Get("project")
+	}
+	return ref
 }
 
-// ---------- OAuth login per project ----------
+func extractUserID(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if len(auth) < 8 || auth[:7] != "Bearer " {
+		return "anonymous"
+	}
+	tokenStr := auth[7:]
+	claims := jwt.MapClaims{}
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) { return jwtSecret, nil })
+	if err != nil {
+		return "anonymous"
+	}
+	sub, _ := claims["sub"].(string)
+	return sub
+}
+
+func logActivity(r *http.Request, action, details string) {
+	userID := extractUserID(r)
+	dbPool.Exec(context.Background(), `INSERT INTO activity_log (user_id, action, details) VALUES ($1,$2,$3)`, userID, action, details)
+}
+
+// ---------- Auth Handlers ----------
+func signupHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Email, Password, Phone string }
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Email == "" || req.Password == "" {
+		http.Error(w, `{"error":"email and password required"}`, 400)
+		return
+	}
+	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	_, err := dbPool.Exec(context.Background(),
+		`INSERT INTO platform_users (email, password_hash, phone) VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING`,
+		req.Email, string(hashed), req.Phone)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+	logActivity(r, "signup", req.Email)
+	w.Write([]byte(`{"message":"signup successful"}`))
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Email, Password string }
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Email == "" || req.Password == "" {
+		http.Error(w, `{"error":"email and password required"}`, 400)
+		return
+	}
+	var userID, hashed string
+	var suspended bool
+	err := dbPool.QueryRow(context.Background(),
+		`SELECT id, password_hash, suspended FROM platform_users WHERE email=$1`, req.Email).Scan(&userID, &hashed, &suspended)
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(hashed), []byte(req.Password)) != nil {
+		http.Error(w, `{"error":"invalid credentials"}`, 401)
+		return
+	}
+	if suspended {
+		http.Error(w, `{"error":"account suspended"}`, 403)
+		return
+	}
+	claims := jwt.MapClaims{
+		"sub": userID, "email": req.Email,
+		"iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, _ := token.SignedString(jwtSecret)
+	logActivity(r, "login", req.Email)
+	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+}
+
+func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Email string }
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Email == "" {
+		http.Error(w, `{"error":"email required"}`, 400)
+		return
+	}
+	otp := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
+	expiry := time.Now().Add(15 * time.Minute)
+	_, err := dbPool.Exec(context.Background(),
+		`UPDATE platform_users SET otp_code=$1, otp_expiry=$2 WHERE email=$3`, otp, expiry, req.Email)
+	if err != nil {
+		log.Printf("ERROR storing OTP: %v", err)
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+	go sendResendOTP(req.Email, otp)
+	logActivity(r, "forgot_password", req.Email)
+	json.NewEncoder(w).Encode(map[string]string{"message": "If that email exists, a reset code has been sent"})
+}
+
+func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Email, OTP, NewPassword string }
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Email == "" || req.OTP == "" || req.NewPassword == "" {
+		http.Error(w, `{"error":"email, otp, new_password required"}`, 400)
+		return
+	}
+	var storedOTP string
+	var expiry time.Time
+	err := dbPool.QueryRow(context.Background(),
+		`SELECT otp_code, otp_expiry FROM platform_users WHERE email=$1`, req.Email).Scan(&storedOTP, &expiry)
+	if err != nil || storedOTP != req.OTP || time.Now().After(expiry) {
+		http.Error(w, `{"error":"invalid otp"}`, 401)
+		return
+	}
+	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	dbPool.Exec(context.Background(),
+		`UPDATE platform_users SET password_hash=$1, otp_code=NULL, otp_expiry=NULL WHERE email=$2`,
+		string(hashed), req.Email)
+	logActivity(r, "reset_password", req.Email)
+	w.Write([]byte(`{"message":"password updated"}`))
+}
+
+// ---------- Per‑Project OAuth Handlers ----------
 func projectOAuthLoginHandler(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
 	projectRef := getProjectRef(r)
 	if projectRef == "" {
-		http.Error(w, "missing x-project-ref header", 400)
+		http.Error(w, "missing project ref", 400)
 		return
 	}
-
 	var cid, csecret string
 	var enabled bool
 	err := dbPool.QueryRow(context.Background(),
-		`SELECT client_id, client_secret, enabled FROM project_oauth_providers
-		 WHERE project_ref=$1 AND provider=$2`, projectRef, provider).
-		Scan(&cid, &csecret, &enabled)
+		`SELECT client_id, client_secret, enabled FROM project_oauth_providers WHERE project_ref=$1 AND provider=$2`,
+		projectRef, provider).Scan(&cid, &csecret, &enabled)
 	if err != nil || !enabled {
 		http.Error(w, "provider not configured", 404)
 		return
 	}
 
-	config := &oauth2.Config{
+	cfg := &oauth2.Config{
 		ClientID:     cid,
 		ClientSecret: csecret,
-		RedirectURL:  fmt.Sprintf("%s/auth/%s/callback", os.Getenv("RENDER_EXTERNAL_URL"), provider),
-		Scopes:       []string{"user:email"},
-		Endpoint:     github.Endpoint, // default, switch below
+		RedirectURL:  fmt.Sprintf("%s/auth/%s/callback?project=%s", os.Getenv("RENDER_EXTERNAL_URL"), provider, projectRef),
 	}
 	switch provider {
 	case "google":
-		config.Scopes = []string{"https://www.googleapis.com/auth/userinfo.email"}
-		config.Endpoint = google.Endpoint
+		cfg.Scopes = []string{"https://www.googleapis.com/auth/userinfo.email"}
+		cfg.Endpoint = google.Endpoint
 	case "github":
-		config.Scopes = []string{"user:email"}
-		config.Endpoint = github.Endpoint
-	// add other providers as needed
+		cfg.Scopes = []string{"user:email"}
+		cfg.Endpoint = github.Endpoint
+	default:
+		http.Error(w, "unsupported provider", 400)
+		return
 	}
 
 	state := make([]byte, 16)
 	rand.Read(state)
 	stateStr := base64.URLEncoding.EncodeToString(state)
-	dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider, project_ref) VALUES ($1,$2,$3)`,
+	dbPool.Exec(context.Background(),
+		`INSERT INTO oauth_states (state, provider, project_ref) VALUES ($1,$2,$3)`,
 		stateStr, provider, projectRef)
-
-	url := config.AuthCodeURL(stateStr)
+	url := cfg.AuthCodeURL(stateStr)
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
 func projectOAuthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
-	projectRef := r.URL.Query().Get("state") // state contains project ref? We need a better way.
-	// For simplicity, we'll retrieve project_ref from oauth_states table.
 	state := r.URL.Query().Get("state")
+	code := r.URL.Query().Get("code")
+	projectRef := r.URL.Query().Get("project")
+
 	var prov, pref string
 	err := dbPool.QueryRow(context.Background(),
-		`SELECT provider, project_ref FROM oauth_states WHERE state=$1`, state).
-		Scan(&prov, &pref)
+		`SELECT provider, project_ref FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref)
 	if err != nil || prov != provider {
 		http.Error(w, "invalid state", 400)
 		return
 	}
+	if projectRef == "" {
+		projectRef = pref
+	}
 	dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
 
-	// Exchange code for token (same as before, using the provider's config loaded from DB)
-	// … (code omitted for brevity, identical to previous callback but loads per‑project config)
-	// After obtaining email, insert user and return JWT.
+	var cid, csecret string
+	err = dbPool.QueryRow(context.Background(),
+		`SELECT client_id, client_secret FROM project_oauth_providers WHERE project_ref=$1 AND provider=$2`,
+		projectRef, provider).Scan(&cid, &csecret)
+	if err != nil {
+		http.Error(w, "provider not configured", 404)
+		return
+	}
+
+	cfg := &oauth2.Config{ClientID: cid, ClientSecret: csecret}
+	switch provider {
+	case "google":
+		cfg.Endpoint = google.Endpoint
+	case "github":
+		cfg.Endpoint = github.Endpoint
+	}
+
+	token, err := cfg.Exchange(context.Background(), code)
+	if err != nil {
+		http.Error(w, "token exchange failed: "+err.Error(), 500)
+		return
+	}
+
+	var email string
+	switch provider {
+	case "github":
+		req, _ := http.NewRequest("GET", "https://api.github.com/user/emails", nil)
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		resp, _ := http.DefaultClient.Do(req)
+		defer resp.Body.Close()
+		var emails []struct{ Email string; Primary bool }
+		json.NewDecoder(resp.Body).Decode(&emails)
+		for _, e := range emails {
+			if e.Primary {
+				email = e.Email
+				break
+			}
+		}
+		if email == "" && len(emails) > 0 {
+			email = emails[0].Email
+		}
+	case "google":
+		resp, _ := http.Get("https://www.googleapis.com/oauth2/v2/userinfo?access_token=" + token.AccessToken)
+		defer resp.Body.Close()
+		var guser struct{ Email string }
+		json.NewDecoder(resp.Body).Decode(&guser)
+		email = guser.Email
+	}
+	if email == "" {
+		http.Error(w, "could not fetch email", 500)
+		return
+	}
+
+	var userID string
+	err = dbPool.QueryRow(context.Background(),
+		`INSERT INTO platform_users (email) VALUES ($1) ON CONFLICT (email) DO UPDATE SET email=$1 RETURNING id`,
+		email).Scan(&userID)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+
+	claims := jwt.MapClaims{
+		"sub": userID, "email": email,
+		"iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix(),
+	}
+	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, _ := jwtToken.SignedString(jwtSecret)
+	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
 }
 
-// ---------- Project‑scoped admin handlers ----------
+// ---------- Resend Email Helper ----------
+func sendResendOTP(email, otp string) {
+	var apiKey string
+	_ = dbPool.QueryRow(context.Background(), `SELECT value FROM smtp_config WHERE key='resend_api_key'`).Scan(&apiKey)
+	if apiKey == "" {
+		return
+	}
+	var fromName, fromEmail string
+	_ = dbPool.QueryRow(context.Background(), `SELECT value FROM smtp_config WHERE key='from_name'`).Scan(&fromName)
+	_ = dbPool.QueryRow(context.Background(), `SELECT value FROM smtp_config WHERE key='from_email'`).Scan(&fromEmail)
+	if fromName == "" {
+		fromName = "Blubase"
+	}
+	if fromEmail == "" {
+		fromEmail = "noreply@blubase.dev"
+	}
+
+	payload := fmt.Sprintf(`{"from": "%s <%s>", "to": ["%s"], "subject": "Your password reset code", "html": "<p>Your reset code is: <strong>%s</strong></p>"}`, fromName, fromEmail, email, otp)
+	req, _ := http.NewRequest("POST", "https://api.resend.com/emails", bytes.NewBuffer([]byte(payload)))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("Resend error: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode > 299 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("Resend error %d: %s", resp.StatusCode, string(body))
+	}
+}
+
+// ---------- Project‑Scoped OAuth Admin Handlers ----------
 func listProjectOAuthProvidersHandler(w http.ResponseWriter, r *http.Request) {
 	ref := getProjectRef(r)
-	if ref == "" { http.Error(w, "missing x-project-ref", 400); return }
+	if ref == "" {
+		http.Error(w, "missing project ref", 400)
+		return
+	}
 	rows, _ := dbPool.Query(context.Background(),
 		`SELECT provider, client_id, client_secret, enabled FROM project_oauth_providers WHERE project_ref=$1`, ref)
 	defer rows.Close()
 	var providers []map[string]interface{}
 	for rows.Next() {
-		var p, cid, csec string
+		var p, cid, csecret string
 		var en bool
-		rows.Scan(&p, &cid, &csec, &en)
+		rows.Scan(&p, &cid, &csecret, &en)
 		providers = append(providers, map[string]interface{}{
 			"provider": p, "client_id": cid, "client_secret": "***", "enabled": en,
 		})
@@ -165,7 +417,10 @@ func listProjectOAuthProvidersHandler(w http.ResponseWriter, r *http.Request) {
 
 func createProjectOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
 	ref := getProjectRef(r)
-	if ref == "" { http.Error(w, "missing x-project-ref", 400); return }
+	if ref == "" {
+		http.Error(w, "missing project ref", 400)
+		return
+	}
 	var req struct{ Provider, ClientID, ClientSecret string; Enabled bool }
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Provider == "" || req.ClientID == "" || req.ClientSecret == "" {
@@ -189,10 +444,11 @@ func updateProjectOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	enabled := true
-	if req.Enabled != nil { enabled = *req.Enabled }
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
 	dbPool.Exec(context.Background(),
-		`UPDATE project_oauth_providers SET client_id=$1, client_secret=$2, enabled=$3
-		 WHERE project_ref=$4 AND provider=$5`,
+		`UPDATE project_oauth_providers SET client_id=$1, client_secret=$2, enabled=$3 WHERE project_ref=$4 AND provider=$5`,
 		req.ClientID, req.ClientSecret, enabled, ref, provider)
 	w.Write([]byte(`{"status":"updated"}`))
 }
@@ -205,53 +461,156 @@ func deleteProjectOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"deleted"}`))
 }
 
-// … rest of the handlers (signup, login, forgot-password, etc.) remain the same as the nuclear rewrite.
-// They are omitted here for space, but will be included in the actual file.
-
-
-func getProjectRef(r *http.Request) string { return r.Header.Get("x-project-ref") }
-
-func projectOAuthLoginHandler(w http.ResponseWriter, r *http.Request) {
-	provider := chi.URLParam(r, "provider")
-	projectRef := r.URL.Query().Get("project")
-	if projectRef == "" { projectRef = getProjectRef(r) }
-	if projectRef == "" { http.Error(w, "missing project ref", 400); return }
-	var cid, csecret string
-	var enabled bool
-	err := dbPool.QueryRow(context.Background(),
-		`SELECT client_id, client_secret, enabled FROM project_oauth_providers WHERE project_ref=$1 AND provider=$2`,
-		projectRef, provider).Scan(&cid, &csecret, &enabled)
-	if err != nil || !enabled { http.Error(w, "provider not configured", 404); return }
-
-	cfg := &oauth2.Config{ClientID: cid, ClientSecret: csecret, RedirectURL: fmt.Sprintf("%s/auth/%s/callback", os.Getenv("RENDER_EXTERNAL_URL"), provider)}
-	switch provider {
-	case "google": cfg.Scopes = []string{"https://www.googleapis.com/auth/userinfo.email"}; cfg.Endpoint = google.Endpoint
-	case "github": cfg.Scopes = []string{"user:email"}; cfg.Endpoint = github.Endpoint
-	default: http.Error(w, "unsupported provider", 400); return
+// ---------- Admin Handlers (abbreviated) ----------
+func listPlatformUsersHandler(w http.ResponseWriter, r *http.Request) {
+	rows, _ := dbPool.Query(context.Background(), `SELECT id, email, phone, suspended, created_at FROM platform_users ORDER BY created_at DESC`)
+	defer rows.Close()
+	var users []map[string]interface{}
+	for rows.Next() {
+		var id, email, phone string
+		var suspended bool
+		var createdAt time.Time
+		rows.Scan(&id, &email, &phone, &suspended, &createdAt)
+		users = append(users, map[string]interface{}{"id": id, "email": email, "phone": phone, "suspended": suspended, "created_at": createdAt})
 	}
-	state := make([]byte, 16); rand.Read(state); stateStr := base64.URLEncoding.EncodeToString(state)
-	dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider, project_ref) VALUES ($1,$2,$3)`, stateStr, provider, projectRef)
-	http.Redirect(w, r, cfg.AuthCodeURL(stateStr), http.StatusFound)
+	json.NewEncoder(w).Encode(users)
+}
+func toggleUserStatusHandler(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "id")
+	var req struct{ Suspended bool `json:"suspended"` }
+	json.NewDecoder(r.Body).Decode(&req)
+	dbPool.Exec(context.Background(), `UPDATE platform_users SET suspended=$1 WHERE id=$2`, req.Suspended, userID)
+	w.Write([]byte(`{"status":"updated"}`))
+}
+func sendAdminMessageHandler(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "id")
+	var req struct{ Content string `json:"content"` }
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Content == "" {
+		http.Error(w, `{"error":"content required"}`, 400)
+		return
+	}
+	dbPool.Exec(context.Background(), `INSERT INTO admin_messages (user_id, direction, content) VALUES ($1,'admin',$2)`, userID, req.Content)
+	w.Write([]byte(`{"status":"sent"}`))
+}
+func getUserMessagesHandler(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "id")
+	rows, _ := dbPool.Query(context.Background(),
+		`SELECT direction, content, created_at FROM admin_messages WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, userID)
+	defer rows.Close()
+	var msgs []map[string]interface{}
+	for rows.Next() {
+		var dir, content string
+		var createdAt time.Time
+		rows.Scan(&dir, &content, &createdAt)
+		msgs = append(msgs, map[string]interface{}{"direction": dir, "content": content, "created_at": createdAt})
+	}
+	json.NewEncoder(w).Encode(msgs)
+}
+func listAllProjectsHandler(w http.ResponseWriter, r *http.Request) {
+	rows, _ := dbPool.Query(context.Background(), `SELECT id, name, ref, owner_id, anon_key, created_at FROM projects ORDER BY created_at DESC`)
+	defer rows.Close()
+	var projects []map[string]interface{}
+	for rows.Next() {
+		var id, name, ref, ownerID, anonKey string
+		var createdAt time.Time
+		rows.Scan(&id, &name, &ref, &ownerID, &anonKey, &createdAt)
+		projects = append(projects, map[string]interface{}{
+			"id": id, "name": name, "ref": ref, "owner_id": ownerID, "anon_key": anonKey, "created_at": createdAt,
+		})
+	}
+	json.NewEncoder(w).Encode(projects)
+}
+func toggleProjectStatusHandler(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "ref")
+	var req struct{ Status string `json:"status"` }
+	json.NewDecoder(r.Body).Decode(&req)
+	dbPool.Exec(context.Background(), `UPDATE projects SET status=$1 WHERE ref=$2`, req.Status, ref)
+	w.Write([]byte(`{"status":"updated"}`))
 }
 
-func projectOAuthCallbackHandler(w http.ResponseWriter, r *http.Request) {
-	provider := chi.URLParam(r, "provider")
-	state := r.URL.Query().Get("state")
-	code := r.URL.Query().Get("code")
-	var prov, pref string
-	err := dbPool.QueryRow(context.Background(), `SELECT provider, project_ref FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref)
-	if err != nil || prov != provider { http.Error(w, "invalid state", 400); return }
-	dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
-
-	// Load project config
-	var cid, csecret string
-	dbPool.QueryRow(context.Background(), `SELECT client_id, client_secret FROM project_oauth_providers WHERE project_ref=$1 AND provider=$2`, pref, provider).Scan(&cid, &csecret)
-	cfg := &oauth2.Config{ClientID: cid, ClientSecret: csecret, Endpoint: google.Endpoint}
-	if provider == "github" { cfg.Endpoint = github.Endpoint }
-	token, err := cfg.Exchange(context.Background(), code)
-	if err != nil { http.Error(w, "token exchange failed", 500); return }
-
-	// Fetch email (same as before, omitted for brevity)
-	// … insert user, return JWT
-	json.NewEncoder(w).Encode(map[string]string{"token": "jwt", "userId": "uuid"})
+func listTemplatesHandler(w http.ResponseWriter, r *http.Request) {
+	rows, _ := dbPool.Query(context.Background(), `SELECT name, subject, body FROM email_templates`)
+	defer rows.Close()
+	templates := map[string]interface{}{}
+	for rows.Next() {
+		var name, subject, body string
+		rows.Scan(&name, &subject, &body)
+		templates[name] = map[string]string{"subject": subject, "body": body}
+	}
+	json.NewEncoder(w).Encode(templates)
+}
+func createTemplateHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Name, Subject, Body string }
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Name == "" || req.Subject == "" || req.Body == "" {
+		http.Error(w, `{"error":"name, subject, body required"}`, 400)
+		return
+	}
+	dbPool.Exec(context.Background(),
+		`INSERT INTO email_templates (name, subject, body) VALUES ($1,$2,$3) ON CONFLICT (name) DO UPDATE SET subject=$2, body=$3`,
+		req.Name, req.Subject, req.Body)
+	w.Write([]byte(`{"status":"created"}`))
+}
+func deleteTemplateHandler(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	dbPool.Exec(context.Background(), `DELETE FROM email_templates WHERE name=$1`, name)
+	w.Write([]byte(`{"status":"deleted"}`))
+}
+func getSMTPHandler(w http.ResponseWriter, r *http.Request) {
+	rows, _ := dbPool.Query(context.Background(), `SELECT key, value FROM smtp_config`)
+	defer rows.Close()
+	cfg := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		rows.Scan(&k, &v)
+		cfg[k] = v
+	}
+	json.NewEncoder(w).Encode(cfg)
+}
+func updateSMTPHandler(w http.ResponseWriter, r *http.Request) {
+	var req map[string]string
+	json.NewDecoder(r.Body).Decode(&req)
+	for k, v := range req {
+		dbPool.Exec(context.Background(),
+			`INSERT INTO smtp_config (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2`, k, v)
+	}
+	w.Write([]byte(`{"status":"updated"}`))
+}
+func getURLConfigHandler(w http.ResponseWriter, r *http.Request) {
+	cfg := map[string]interface{}{
+		"site_url":         os.Getenv("RENDER_EXTERNAL_URL"),
+		"jwt_expiry_hours": 24,
+		"redirect_urls":    []string{},
+	}
+	rows, _ := dbPool.Query(context.Background(), `SELECT url FROM allowed_redirect_urls`)
+	defer rows.Close()
+	var urls []string
+	for rows.Next() {
+		var u string
+		rows.Scan(&u)
+		urls = append(urls, u)
+	}
+	if urls != nil {
+		cfg["redirect_urls"] = urls
+	}
+	json.NewEncoder(w).Encode(cfg)
+}
+func updateURLConfigHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SiteURL        string   `json:"site_url"`
+		JWTExpiryHours int      `json:"jwt_expiry_hours"`
+		RedirectURLs   []string `json:"redirect_urls"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.SiteURL != "" {
+		os.Setenv("RENDER_EXTERNAL_URL", req.SiteURL)
+	}
+	if req.RedirectURLs != nil {
+		dbPool.Exec(context.Background(), `DELETE FROM allowed_redirect_urls`)
+		for _, u := range req.RedirectURLs {
+			dbPool.Exec(context.Background(), `INSERT INTO allowed_redirect_urls (url) VALUES ($1)`, u)
+		}
+	}
+	w.Write([]byte(`{"status":"updated"}`))
 }
