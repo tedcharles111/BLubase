@@ -104,6 +104,7 @@ func main() {
 	r.Put("/admin/url-config", updateURLConfigHandler)
 
 	log.Println("Auth server on :3001")
+	loadOAuthConfigs()
 	log.Fatal(http.ListenAndServe(":3001", r))
 }
 
