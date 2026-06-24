@@ -471,15 +471,33 @@ func createOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
 }
 func updateOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
-	var req struct{ ClientID, ClientSecret string; Enabled bool }
+	var req struct {
+		ClientID     string `json:"client_id,omitempty"`
+		ClientSecret string `json:"client_secret,omitempty"`
+		Enabled      *bool  `json:"enabled,omitempty"`
+		// Also accept camelCase from the frontend
+		ClientIDAlt  string `json:"clientId,omitempty"`
+		ClientSecretAlt string `json:"clientSecret,omitempty"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.ClientID == "" || req.ClientSecret == "" {
-		http.Error(w, `{"error":"client_id, client_secret required"}`, 400)
+	
+	// Use whichever field is provided
+	cid := req.ClientID
+	if cid == "" { cid = req.ClientIDAlt }
+	csecret := req.ClientSecret
+	if csecret == "" { csecret = req.ClientSecretAlt }
+	
+	if cid == "" || csecret == "" {
+		http.Error(w, `{"error":"client_id and client_secret required"}`, 400)
 		return
 	}
+	
+	enabled := true
+	if req.Enabled != nil { enabled = *req.Enabled }
+	
 	dbPool.Exec(context.Background(),
 		`UPDATE oauth_providers SET client_id=$1, client_secret=$2, enabled=$3 WHERE provider=$4`,
-		req.ClientID, req.ClientSecret, req.Enabled, provider)
+		cid, csecret, enabled, provider)
 	loadOAuthConfigs()
 	w.Write([]byte(`{"status":"updated"}`))
 }
