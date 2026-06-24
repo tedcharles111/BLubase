@@ -100,6 +100,8 @@ func main() {
 	r.Get("/admin/url-config", getURLConfigHandler)
 	r.Get("/auth/{provider}/login", oauthLoginHandler)
 	r.Get("/auth/{provider}/callback", oauthCallbackHandler)
+	r.Get("/auth/{provider}/login", oauthLoginHandler)
+	r.Get("/auth/{provider}/callback", oauthCallbackHandler)
 	r.Put("/admin/url-config", updateURLConfigHandler)
 
 	// OAuth flow
