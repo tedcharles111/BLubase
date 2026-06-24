@@ -72,10 +72,12 @@ func main() {
 	r.Post("/login", loginHandler)
 	r.Post("/forgot-password", forgotPasswordHandler)
 	r.Post("/reset-password", resetPasswordHandler)
+	r.Get("/auth/google/login", googleLoginHandler)
+	r.Get("/auth/google/callback", googleCallbackHandler)
+	r.Get("/auth/github/login", githubLoginHandler)
+	r.Get("/auth/github/callback", githubCallbackHandler)
 
 	// OAuth flow
-	r.Get("/auth/{provider}/login", oauthLoginHandler)
-	r.Get("/auth/{provider}/callback", oauthCallbackHandler)
 
 	// Activity log
 	r.Post("/activity", logActivityHandler)
@@ -527,4 +529,36 @@ func loadOAuthConfigs() {
 			}
 		}
 	}
+}
+
+func googleLoginHandler(w http.ResponseWriter, r *http.Request) {
+	provider := "google"
+	config, ok := oauthConfigs[provider]
+	if !ok { http.Error(w, "provider not configured", 404); return }
+	state := make([]byte, 16)
+	rand.Read(state)
+	stateStr := base64.URLEncoding.EncodeToString(state)
+	dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider) VALUES ($1,$2)`, stateStr, provider)
+	url := config.AuthCodeURL(stateStr)
+	http.Redirect(w, r, url, http.StatusFound)
+}
+
+func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	oauthCallbackHandler(w, r)
+}
+
+func githubLoginHandler(w http.ResponseWriter, r *http.Request) {
+	provider := "github"
+	config, ok := oauthConfigs[provider]
+	if !ok { http.Error(w, "provider not configured", 404); return }
+	state := make([]byte, 16)
+	rand.Read(state)
+	stateStr := base64.URLEncoding.EncodeToString(state)
+	dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider) VALUES ($1,$2)`, stateStr, provider)
+	url := config.AuthCodeURL(stateStr)
+	http.Redirect(w, r, url, http.StatusFound)
+}
+
+func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	oauthCallbackHandler(w, r)
 }
