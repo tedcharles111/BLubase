@@ -49,6 +49,7 @@ func main() {
 		PRIMARY KEY (project_ref, provider)
 	)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS oauth_states (
+		redirect_url TEXT,
 		state TEXT PRIMARY KEY, provider TEXT, project_ref TEXT,
 		created_at TIMESTAMPTZ DEFAULT now()
 	)`)
@@ -265,6 +266,35 @@ func googleLoginHandler(w http.ResponseWriter, r *http.Request) {
 func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
+	var prov, pref, redirectTo string
+	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref, redirect_url FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref, &redirectTo)
+	if prov != "google" { http.Error(w, "invalid state", 400); return }
+	dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
+	var cid, csecret string
+	_ = dbPool.QueryRow(context.Background(),
+		`SELECT client_id, client_secret FROM project_oauth_providers WHERE project_ref=$1 AND provider='google'`, pref).Scan(&cid, &csecret)
+	cfg := &oauth2.Config{ClientID: cid, ClientSecret: csecret, Endpoint: google.Endpoint, RedirectURL: fmt.Sprintf("%s/auth/google/callback", os.Getenv("RENDER_EXTERNAL_URL"))}
+	token, err := cfg.Exchange(context.Background(), code)
+	if err != nil { http.Error(w, "exchange error: "+err.Error(), 500); return }
+	resp, _ := http.Get("https://www.googleapis.com/oauth2/v2/userinfo?access_token=" + token.AccessToken)
+	defer resp.Body.Close()
+	var guser struct{ Email string }
+	json.NewDecoder(resp.Body).Decode(&guser)
+	if guser.Email == "" { http.Error(w, "could not fetch email", 500); return }
+	var userID string
+	_ = dbPool.QueryRow(context.Background(),
+		`INSERT INTO platform_users (email) VALUES ($1) ON CONFLICT (email) DO UPDATE SET email=$1 RETURNING id`, guser.Email).Scan(&userID)
+	claims := jwt.MapClaims{"sub": userID, "email": guser.Email, "iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix()}
+	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, _ := jwtToken.SignedString(jwtSecret)
+	if redirectTo != "" {
+		http.Redirect(w, r, redirectTo+"?token="+signed+"&userId="+userID, http.StatusFound)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+}
+	state := r.URL.Query().Get("state")
+	code := r.URL.Query().Get("code")
 	var prov, pref string
 	err := dbPool.QueryRow(context.Background(),
 		`SELECT provider, project_ref FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref)
@@ -329,6 +359,40 @@ func githubLoginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	state := r.URL.Query().Get("state")
+	code := r.URL.Query().Get("code")
+	var prov, pref, redirectTo string
+	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref, redirect_url FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref, &redirectTo)
+	if prov != "github" { http.Error(w, "invalid state", 400); return }
+	dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
+	var cid, csecret string
+	_ = dbPool.QueryRow(context.Background(),
+		`SELECT client_id, client_secret FROM project_oauth_providers WHERE project_ref=$1 AND provider='github'`, pref).Scan(&cid, &csecret)
+	cfg := &oauth2.Config{ClientID: cid, ClientSecret: csecret, Endpoint: github.Endpoint, RedirectURL: fmt.Sprintf("%s/auth/github/callback", os.Getenv("RENDER_EXTERNAL_URL"))}
+	token, err := cfg.Exchange(context.Background(), code)
+	if err != nil { http.Error(w, "exchange error: "+err.Error(), 500); return }
+	req, _ := http.NewRequest("GET", "https://api.github.com/user/emails", nil)
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	resp, _ := http.DefaultClient.Do(req)
+	defer resp.Body.Close()
+	var emails []struct{ Email string; Primary bool }
+	json.NewDecoder(resp.Body).Decode(&emails)
+	var email string
+	for _, e := range emails { if e.Primary { email = e.Email; break } }
+	if email == "" && len(emails) > 0 { email = emails[0].Email }
+	if email == "" { http.Error(w, "could not fetch email", 500); return }
+	var userID string
+	_ = dbPool.QueryRow(context.Background(),
+		`INSERT INTO platform_users (email) VALUES ($1) ON CONFLICT (email) DO UPDATE SET email=$1 RETURNING id`, email).Scan(&userID)
+	claims := jwt.MapClaims{"sub": userID, "email": email, "iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix()}
+	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, _ := jwtToken.SignedString(jwtSecret)
+	if redirectTo != "" {
+		http.Redirect(w, r, redirectTo+"?token="+signed+"&userId="+userID, http.StatusFound)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+}
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 	var prov, pref string
