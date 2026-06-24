@@ -205,16 +205,16 @@ func googleLoginHandler(w http.ResponseWriter, r *http.Request) {
 		Endpoint: google.Endpoint,
 	}
 	rawState := fmt.Sprintf("%s:%s", ref, base64.URLEncoding.EncodeToString(make([]byte, 16)))
-	stateEnc := base64.URLEncoding.EncodeToString([]byte(rawState))
+	
 	dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider, project_ref) VALUES ($1,'google',$2)`, stateEnc, ref)
-	http.Redirect(w, r, cfg.AuthCodeURL(stateEnc), http.StatusFound)
+	http.Redirect(w, r, cfg.AuthCodeURL(stateStr), http.StatusFound)
 }
 
 func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 	var prov, pref string
-	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref)
+	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref FROM oauth_states WHERE state=$1`, stateStr).Scan(&prov, &pref)
 	if prov != "google" { http.Error(w, "invalid state", 400); return }
 	dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
 	ref := pref
@@ -252,16 +252,16 @@ func githubLoginHandler(w http.ResponseWriter, r *http.Request) {
 		Endpoint: github.Endpoint,
 	}
 	rawState := fmt.Sprintf("%s:%s", ref, base64.URLEncoding.EncodeToString(make([]byte, 16)))
-	stateEnc := base64.URLEncoding.EncodeToString([]byte(rawState))
+	
 	dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider, project_ref) VALUES ($1,'github',$2)`, stateEnc, ref)
-	http.Redirect(w, r, cfg.AuthCodeURL(stateEnc), http.StatusFound)
+	http.Redirect(w, r, cfg.AuthCodeURL(stateStr), http.StatusFound)
 }
 
 func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 	var prov, pref string
-	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref)
+	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref FROM oauth_states WHERE state=$1`, stateStr).Scan(&prov, &pref)
 	if prov != "github" { http.Error(w, "invalid state", 400); return }
 	dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
 	ref := pref
