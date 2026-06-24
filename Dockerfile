@@ -51,3 +51,4 @@ COPY nginx/default.conf /etc/nginx/http.d/default.conf
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 EXPOSE 10000
 CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+# force rebuild
