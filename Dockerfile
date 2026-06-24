@@ -53,3 +53,4 @@ EXPOSE 10000
 CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
 # force rebuild
 # force oauth reload
+# force oauth redeploy
