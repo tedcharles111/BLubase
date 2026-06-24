@@ -213,8 +213,9 @@ func getProjectRef(r *http.Request) string { return r.Header.Get("x-project-ref"
 
 func projectOAuthLoginHandler(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
-	projectRef := getProjectRef(r)
-	if projectRef == "" { http.Error(w, "missing x-project-ref header", 400); return }
+	projectRef := r.URL.Query().Get("project")
+	if projectRef == "" { projectRef = getProjectRef(r) }
+	if projectRef == "" { http.Error(w, "missing project ref", 400); return }
 	var cid, csecret string
 	var enabled bool
 	err := dbPool.QueryRow(context.Background(),
