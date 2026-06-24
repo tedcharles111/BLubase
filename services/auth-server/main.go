@@ -41,12 +41,12 @@ func main() {
 	})
 
 	// Explicit Google login
-	r.Get("/auth/google/login", googleLoginHandler)
-	r.Get("/auth/google/callback", googleCallbackHandler)
+	r.Get("/google/login", googleLoginHandler)
+	r.Get("/google/callback", googleCallbackHandler)
 
 	// Explicit GitHub login
-	r.Get("/auth/github/login", githubLoginHandler)
-	r.Get("/auth/github/callback", githubCallbackHandler)
+	r.Get("/github/login", githubLoginHandler)
+	r.Get("/github/callback", githubCallbackHandler)
 
 	log.Println("Auth server on :3001")
 	log.Fatal(http.ListenAndServe(":3001", r))
