@@ -201,23 +201,24 @@ func googleLoginHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil { http.Error(w, "provider not configured", 404); return }
 	cfg := &oauth2.Config{
 		ClientID: cid, ClientSecret: csecret,
-		RedirectURL: fmt.Sprintf("%s/auth/google/callback?project=%s", os.Getenv("RENDER_EXTERNAL_URL"), ref),
+		RedirectURL: fmt.Sprintf("%s/auth/google/callback", os.Getenv("RENDER_EXTERNAL_URL")),
 		Scopes: []string{"https://www.googleapis.com/auth/userinfo.email"},
 		Endpoint: google.Endpoint,
 	}
-	state := make([]byte, 16); rand.Read(state); stateStr := base64.URLEncoding.EncodeToString(state)
-	dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider, project_ref) VALUES ($1,'google',$2)`, stateStr, ref)
-	http.Redirect(w, r, cfg.AuthCodeURL(stateStr), http.StatusFound)
+	rawState := fmt.Sprintf("%s:%s", ref, base64.URLEncoding.EncodeToString(make([]byte, 16)))
+	stateEnc := base64.URLEncoding.EncodeToString([]byte(rawState))
+	dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider, project_ref) VALUES ($1,'google',$2)`, stateEnc, ref)
+	http.Redirect(w, r, cfg.AuthCodeURL(stateEnc), http.StatusFound)
 }
 
 func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
-	ref := r.URL.Query().Get("project")
-	var prov string
-	_ = dbPool.QueryRow(context.Background(), `SELECT provider FROM oauth_states WHERE state=$1`, state).Scan(&prov)
+	var prov, pref string
+	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref)
 	if prov != "google" { http.Error(w, "invalid state", 400); return }
 	dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
+	ref := pref
 	var cid, csecret string
 	_ = dbPool.QueryRow(context.Background(),
 		`SELECT client_id, client_secret FROM project_oauth_providers WHERE project_ref=$1 AND provider='google'`, ref).Scan(&cid, &csecret)
@@ -247,23 +248,24 @@ func githubLoginHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil { http.Error(w, "provider not configured", 404); return }
 	cfg := &oauth2.Config{
 		ClientID: cid, ClientSecret: csecret,
-		RedirectURL: fmt.Sprintf("%s/auth/github/callback?project=%s", os.Getenv("RENDER_EXTERNAL_URL"), ref),
+		RedirectURL: fmt.Sprintf("%s/auth/github/callback", os.Getenv("RENDER_EXTERNAL_URL")),
 		Scopes: []string{"user:email"},
 		Endpoint: github.Endpoint,
 	}
-	state := make([]byte, 16); rand.Read(state); stateStr := base64.URLEncoding.EncodeToString(state)
-	dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider, project_ref) VALUES ($1,'github',$2)`, stateStr, ref)
-	http.Redirect(w, r, cfg.AuthCodeURL(stateStr), http.StatusFound)
+	rawState := fmt.Sprintf("%s:%s", ref, base64.URLEncoding.EncodeToString(make([]byte, 16)))
+	stateEnc := base64.URLEncoding.EncodeToString([]byte(rawState))
+	dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider, project_ref) VALUES ($1,'github',$2)`, stateEnc, ref)
+	http.Redirect(w, r, cfg.AuthCodeURL(stateEnc), http.StatusFound)
 }
 
 func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
-	ref := r.URL.Query().Get("project")
-	var prov string
-	_ = dbPool.QueryRow(context.Background(), `SELECT provider FROM oauth_states WHERE state=$1`, state).Scan(&prov)
+	var prov, pref string
+	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref)
 	if prov != "github" { http.Error(w, "invalid state", 400); return }
 	dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
+	ref := pref
 	var cid, csecret string
 	_ = dbPool.QueryRow(context.Background(),
 		`SELECT client_id, client_secret FROM project_oauth_providers WHERE project_ref=$1 AND provider='github'`, ref).Scan(&cid, &csecret)
