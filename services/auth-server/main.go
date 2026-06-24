@@ -98,11 +98,11 @@ func main() {
 	r.Post("/admin/oauth-providers", createOAuthProviderHandler)
 	r.Put("/admin/oauth-providers/{provider}", updateOAuthProviderHandler)
 	r.Get("/admin/url-config", getURLConfigHandler)
+	r.Get("/auth/{provider}/login", oauthLoginHandler)
+	r.Get("/auth/{provider}/callback", oauthCallbackHandler)
 	r.Put("/admin/url-config", updateURLConfigHandler)
 
 	// OAuth flow
-	r.Get("/auth/{provider}/login", oauthLoginHandler)
-	r.Get("/auth/{provider}/callback", oauthCallbackHandler)
 
 	log.Println("Auth server on :3001")
 	log.Fatal(http.ListenAndServe(":3001", r))
@@ -511,7 +511,7 @@ func oauthLoginHandler(w http.ResponseWriter, r *http.Request) {
 	state := make([]byte, 16)
 	rand.Read(state)
 	stateStr := base64.URLEncoding.EncodeToString(state)
-dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider) VALUES ($1,$2)`, stateStr, provider)
+	dbPool.Exec(context.Background(), `INSERT INTO oauth_states (state, provider) VALUES ($1,$2)`, stateStr, provider)
 	url := config.AuthCodeURL(stateStr)
 	http.Redirect(w, r, url, http.StatusFound)
 }
