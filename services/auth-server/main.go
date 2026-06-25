@@ -50,7 +50,7 @@ func main() {
 	)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS oauth_states (
 		redirect_url TEXT,
-		state TEXT PRIMARY KEY, provider TEXT, project_ref TEXT,
+		state TEXT PRIMARY KEY, provider TEXT, project_ref TEXT, redirect_uri TEXT,
 		created_at TIMESTAMPTZ DEFAULT now()
 	)`)
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS email_templates (name TEXT PRIMARY KEY, subject TEXT NOT NULL, body TEXT NOT NULL)`)
@@ -156,7 +156,15 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := token.SignedString(jwtSecret)
 	logActivity(r, "login", req.Email)
-	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
+		if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
+		json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	}
+	}
 }
 
 func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
@@ -291,7 +299,15 @@ func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, redirectTo+"?token="+signed+"&userId="+userID, http.StatusFound)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
+		if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
+		json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	}
+	}
 }
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
@@ -328,7 +344,15 @@ func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	claims := jwt.MapClaims{"sub": userID, "email": guser.Email, "iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix()}
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := jwtToken.SignedString(jwtSecret)
-	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
+		if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
+		json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	}
+	}
 }
 
 func githubLoginHandler(w http.ResponseWriter, r *http.Request) {
@@ -391,7 +415,15 @@ func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, redirectTo+"?token="+signed+"&userId="+userID, http.StatusFound)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
+		if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
+		json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	}
+	}
 }
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
@@ -440,7 +472,15 @@ func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	claims := jwt.MapClaims{"sub": userID, "email": email, "iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix()}
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := jwtToken.SignedString(jwtSecret)
-	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
+		if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
+		json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	}
+	}
 }
 
 // ---------- OAuth Admin CRUD (project‑scoped) ----------
