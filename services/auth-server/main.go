@@ -305,7 +305,11 @@ func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		if redir != "" {
 		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
 	} else {
+		if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%sjson.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
 		json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	}
 	}
 	}
 }
@@ -421,7 +425,11 @@ func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		if redir != "" {
 		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
 	} else {
+		if redir != "" {
+		http.Redirect(w, r, fmt.Sprintf("%s?token=%sjson.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})userId=%s", redir, signed, userID), http.StatusFound)
+	} else {
 		json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	}
 	}
 	}
 }
