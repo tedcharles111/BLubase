@@ -275,7 +275,7 @@ func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 	var prov, pref, redirectTo string
-	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref, redirect_url FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref, &redirectTo)
+	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref, redirect_uri FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref, &redirectTo)
 	if prov != "google" { http.Error(w, "invalid state", 400); return }
 	dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
 	var cid, csecret string
@@ -296,12 +296,16 @@ func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := jwtToken.SignedString(jwtSecret)
 	if redirectTo != "" {
-		http.Redirect(w, r, redirectTo+"?token="+signed+"&userId="+userID, http.StatusFound)
+		// Append token & userId to the redirect URL, preserving any existing query params
+		sep := "?"
+		if strings.Contains(redirectTo, "?") {
+			sep = "&"
+		}
+		http.Redirect(w, r, fmt.Sprintf("%s%stoken=%s&userId=%s", redirectTo, sep, signed, userID), http.StatusFound)
 		return
 	}
-	if redir != "" {
-		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
-	} else {
+	// fallback JSON if no redirect_uri was stored
+	{
 		if redir != "" {
 		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
 	} else {
@@ -390,7 +394,7 @@ func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 	var prov, pref, redirectTo string
-	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref, redirect_url FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref, &redirectTo)
+	_ = dbPool.QueryRow(context.Background(), `SELECT provider, project_ref, redirect_uri FROM oauth_states WHERE state=$1`, state).Scan(&prov, &pref, &redirectTo)
 	if prov != "github" { http.Error(w, "invalid state", 400); return }
 	dbPool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1`, state)
 	var cid, csecret string
@@ -416,12 +420,16 @@ func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := jwtToken.SignedString(jwtSecret)
 	if redirectTo != "" {
-		http.Redirect(w, r, redirectTo+"?token="+signed+"&userId="+userID, http.StatusFound)
+		// Append token & userId to the redirect URL, preserving any existing query params
+		sep := "?"
+		if strings.Contains(redirectTo, "?") {
+			sep = "&"
+		}
+		http.Redirect(w, r, fmt.Sprintf("%s%stoken=%s&userId=%s", redirectTo, sep, signed, userID), http.StatusFound)
 		return
 	}
-	if redir != "" {
-		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
-	} else {
+	// fallback JSON if no redirect_uri was stored
+	{
 		if redir != "" {
 		http.Redirect(w, r, fmt.Sprintf("%s?token=%s&userId=%s", redir, signed, userID), http.StatusFound)
 	} else {
