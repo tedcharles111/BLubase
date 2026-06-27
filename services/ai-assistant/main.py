@@ -4,7 +4,6 @@ from fastapi import FastAPI, Request
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 MODEL = "mistral-large-latest"
-API_BASE = "http://127.0.0.1"
 
 app = FastAPI()
 
@@ -35,7 +34,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "run_sql",
-            "description": "Execute a SQL query on the user's database",
+            "description": "Execute a PostgreSQL query on the user's database",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -102,14 +101,17 @@ async def execute_tool(name, args, token):
     if "{query}" in url:
         url = url.replace("{query}", urllib.parse.quote(args.get("query", "")))
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    async with httpx.AsyncClient(timeout=10) as c:
-        if method == "GET":
-            r = await c.get(url, headers=headers)
-        elif method == "POST":
-            r = await c.post(url, json=args, headers=headers)
-        elif method == "PUT":
-            r = await c.put(url, json=args, headers=headers)
-        return r.json() if r.status_code == 200 else {"error": r.text}
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            if method == "GET":
+                r = await c.get(url, headers=headers)
+            elif method == "POST":
+                r = await c.post(url, json=args, headers=headers)
+            elif method == "PUT":
+                r = await c.put(url, json=args, headers=headers)
+            return r.json() if r.status_code == 200 else {"error": r.text}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/assist")
 async def assist(request: Request):
@@ -122,12 +124,9 @@ async def assist(request: Request):
             "role": "system",
             "content": (
                 "You are an agentic AI for Blubase. Use the provided tools to help the user. "
-                "IMPORTANT: If the user asks to create, make, or start a project, you MUST call the create_project function. "
-        "When asked to list tables, always use: SELECT table_name FROM information_schema.tables WHERE table_schema='public'". "
-        "Use standard PostgreSQL syntax for all SQL queries. "
-                "Do NOT use run_sql for project creation. "
-                "For SQL operations, use run_sql. "
-                "For URL configuration changes, use update_url_config. "
+                "When the user asks to create, make, or start a project, call create_project. "
+                "When asked to list tables, always use: SELECT table_name FROM information_schema.tables WHERE table_schema='public'. "
+                "Use standard PostgreSQL syntax for all SQL queries. "
                 "Only use help_user for casual conversation."
             )
         },
