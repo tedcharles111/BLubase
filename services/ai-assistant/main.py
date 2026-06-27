@@ -123,6 +123,8 @@ async def assist(request: Request):
             "content": (
                 "You are an agentic AI for Blubase. Use the provided tools to help the user. "
                 "IMPORTANT: If the user asks to create, make, or start a project, you MUST call the create_project function. "
+        "When asked to list tables, always use: SELECT table_name FROM information_schema.tables WHERE table_schema='public'". "
+        "Use standard PostgreSQL syntax for all SQL queries. "
                 "Do NOT use run_sql for project creation. "
                 "For SQL operations, use run_sql. "
                 "For URL configuration changes, use update_url_config. "
