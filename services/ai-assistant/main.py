@@ -1,6 +1,5 @@
 import os, json, httpx, urllib.parse
 from fastapi import FastAPI, Request
-from pydantic import BaseModel
 
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
@@ -9,73 +8,88 @@ API_BASE = "http://127.0.0.1"
 
 app = FastAPI()
 
-# ---------- Memory Database ----------
-import asyncpg
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-async def init_db():
-    conn = await asyncpg.connect(DATABASE_URL)
-    await conn.execute('''CREATE TABLE IF NOT EXISTS ai_memory (
-        user_id TEXT NOT NULL,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT now()
-    )''')
-    await conn.close()
-
-@app.on_event("startup")
-async def startup():
-    await init_db()
-
-async def get_memory(user_id: str, limit: int = 20):
-    conn = await asyncpg.connect(DATABASE_URL)
-    rows = await conn.fetch(
-        "SELECT role, content FROM ai_memory WHERE user_id=$1 ORDER BY created_at ASC LIMIT $2",
-        user_id, limit
-    )
-    await conn.close()
-    return [dict(row) for row in rows]
-
-async def add_memory(user_id: str, role: str, content: str):
-    conn = await asyncpg.connect(DATABASE_URL)
-    await conn.execute(
-        "INSERT INTO ai_memory (user_id, role, content) VALUES ($1, $2, $3)",
-        user_id, role, content
-    )
-    await conn.close()
-
-# ---------- Tools (same as before, but now include full set) ----------
 TOOLS = [
-    {"type":"function","function":{"name":"list_projects","description":"List all projects owned by the current user","parameters":{"type":"object","properties":{}}}},
-    {"type":"function","function":{"name":"create_project","description":"Create a new project","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
-    {"type":"function","function":{"name":"run_sql","description":"Execute a SQL query","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}},
-    {"type":"function","function":{"name":"get_url_config","description":"Get URL configuration","parameters":{"type":"object","properties":{}}}},
-    {"type":"function","function":{"name":"update_url_config","description":"Update URL configuration","parameters":{"type":"object","properties":{"site_url":{"type":"string"},"jwt_expiry_hours":{"type":"integer"},"redirect_urls":{"type":"array","items":{"type":"string"}}}}}},
-    {"type":"function","function":{"name":"list_oauth_providers","description":"List all OAuth providers","parameters":{"type":"object","properties":{}}}},
-    {"type":"function","function":{"name":"add_oauth_provider","description":"Add or update an OAuth provider","parameters":{"type":"object","properties":{"provider":{"type":"string"},"client_id":{"type":"string"},"client_secret":{"type":"string"},"enabled":{"type":"boolean"}},"required":["provider","client_id","client_secret"]}}},
-    {"type":"function","function":{"name":"list_email_templates","description":"List email templates","parameters":{"type":"object","properties":{}}}},
-    {"type":"function","function":{"name":"create_email_template","description":"Create or update an email template","parameters":{"type":"object","properties":{"name":{"type":"string"},"subject":{"type":"string"},"body":{"type":"string"}},"required":["name","subject","body"]}}},
-    {"type":"function","function":{"name":"get_smtp_config","description":"Get SMTP configuration","parameters":{"type":"object","properties":{}}}},
-    {"type":"function","function":{"name":"update_smtp_config","description":"Update SMTP configuration","parameters":{"type":"object","additionalProperties":{"type":"string"}}}},
-    {"type":"function","function":{"name":"forgot_password","description":"Request a password reset OTP","parameters":{"type":"object","properties":{"email":{"type":"string"}},"required":["email"]}}},
-    {"type":"function","function":{"name":"reset_password","description":"Reset password using OTP","parameters":{"type":"object","properties":{"email":{"type":"string"},"otp":{"type":"string"},"new_password":{"type":"string"}},"required":["email","otp","new_password"]}}},
-    {"type":"function","function":{"name":"help_user","description":"Provide a helpful text response","parameters":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}}}
+    {
+        "type": "function",
+        "function": {
+            "name": "create_project",
+            "description": "Create a new Blubase project. Use this when the user asks to create, make, or start a project.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The project name"}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_projects",
+            "description": "List all projects owned by the user",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_sql",
+            "description": "Execute a SQL query on the user's database",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The SQL query to run"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_url_config",
+            "description": "Get the URL configuration",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_url_config",
+            "description": "Update the URL configuration",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "site_url": {"type": "string"},
+                    "jwt_expiry_hours": {"type": "integer"},
+                    "redirect_urls": {"type": "array", "items": {"type": "string"}}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "help_user",
+            "description": "Provide a helpful text response to the user",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string"}
+                },
+                "required": ["message"]
+            }
+        }
+    }
 ]
 
 ENDPOINTS = {
-    "list_projects":       (3002, "GET",  "/projects"),
     "create_project":      (3002, "POST", "/projects"),
+    "list_projects":       (3002, "GET",  "/projects"),
     "run_sql":             (3007, "GET",  "/sql?query={query}"),
     "get_url_config":      (3001, "GET",  "/admin/url-config"),
     "update_url_config":   (3001, "PUT",  "/admin/url-config"),
-    "list_oauth_providers":(3001, "GET",  "/admin/oauth-providers"),
-    "add_oauth_provider":  (3001, "POST", "/admin/oauth-providers"),
-    "list_email_templates":(3001, "GET",  "/admin/templates"),
-    "create_email_template":(3001,"POST", "/admin/templates"),
-    "get_smtp_config":     (3001, "GET",  "/admin/smtp"),
-    "update_smtp_config":  (3001, "PUT",  "/admin/smtp"),
-    "forgot_password":     (3001, "POST", "/forgot-password"),
-    "reset_password":      (3001, "POST", "/reset-password"),
 }
 
 async def execute_tool(name, args, token):
@@ -101,21 +115,22 @@ async def execute_tool(name, args, token):
 async def assist(request: Request):
     token = request.headers.get("Authorization", "").removeprefix("Bearer ")
     data = await request.json()
-    user_query = data.get("query", "")
+    query = data.get("query", "")
 
-    # Extract user ID from JWT claims (simplified: use token as user_id)
-    user_id = token.split(".")[0] if token else "anonymous"
-
-    # Add user message to memory
-    await add_memory(user_id, "user", user_query)
-
-    # Load recent memory for context (last 10 messages)
-    memory = await get_memory(user_id, 10)
-
-    # Build messages: system prompt + history + current query
-    messages = [{"role": "system", "content": "You are an agentic AI for Blubase. Use the provided tools to help the user. You have access to the conversation history below. Use it to maintain context."}]
-    for mem in memory:
-        messages.append({"role": mem["role"], "content": mem["content"]})
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an agentic AI for Blubase. Use the provided tools to help the user. "
+                "IMPORTANT: If the user asks to create, make, or start a project, you MUST call the create_project function. "
+                "Do NOT use run_sql for project creation. "
+                "For SQL operations, use run_sql. "
+                "For URL configuration changes, use update_url_config. "
+                "Only use help_user for casual conversation."
+            )
+        },
+        {"role": "user", "content": query}
+    ]
 
     payload = {
         "model": MODEL,
@@ -125,36 +140,24 @@ async def assist(request: Request):
         "temperature": 0.2
     }
 
-    async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.post(MISTRAL_URL, json=payload,
-                         headers={"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"})
-        r.raise_for_status()
-        resp_data = r.json()
-        msg = resp_data["choices"][0]["message"]
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(MISTRAL_URL, json=payload,
+                             headers={"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"})
+            r.raise_for_status()
+            resp_data = r.json()
+            msg = resp_data["choices"][0]["message"]
 
-        answer_text = msg.get("content", "")
-        action = "chat"
-
-        if "tool_calls" in msg and msg["tool_calls"]:
-            tc = msg["tool_calls"][0]
-            fname = tc["function"]["name"]
-            fargs = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
-            result = await execute_tool(fname, fargs, token)
-            answer_text = json.dumps(result, indent=2)
-            action = fname
-
-        # Add assistant response to memory
-        await add_memory(user_id, "assistant", answer_text)
-
-        return {"answer": answer_text, "action": action}
+            if "tool_calls" in msg and msg["tool_calls"]:
+                tc = msg["tool_calls"][0]
+                fname = tc["function"]["name"]
+                fargs = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
+                result = await execute_tool(fname, fargs, token)
+                return {"answer": json.dumps(result, indent=2), "action": fname}
+            return {"answer": msg.get("content", "I'm not sure how to help.")}
+    except Exception as e:
+        return {"answer": f"Agent error: {str(e)}"}
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-@app.get("/history")
-async def history(request: Request):
-    token = request.headers.get("Authorization", "").removeprefix("Bearer ")
-    user_id = token.split(".")[0] if token else "anonymous"
-    rows = await get_memory(user_id, 50)
-    return rows
