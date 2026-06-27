@@ -124,7 +124,7 @@ async def assist(request: Request):
             "role": "system",
             "content": (
                 "You are an agentic AI for Blubase. Use the provided tools to help the user. "
-                "When the user asks to create, make, or start a project, call create_project. "
+                'When the user asks to create, make, or start a project, call create_project. '
                 "When asked to list tables, always use: SELECT table_name FROM information_schema.tables WHERE table_schema='public'. "
                 "Use standard PostgreSQL syntax for all SQL queries. "
                 "Only use help_user for casual conversation."
