@@ -30,7 +30,7 @@ var (
 func main() {
 	ctx := context.Background()
 	var err error
-	dbPool, err = pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+	dbPool, err = connectDB(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil { log.Fatal(err) }
 
 	// Ensure tables
@@ -381,4 +381,30 @@ func deleteProjectOAuthProviderHandler(w http.ResponseWriter, r *http.Request) {
 	dbPool.Exec(context.Background(),
 		`DELETE FROM project_oauth_providers WHERE project_ref=$1 AND provider=$2`, ref, provider)
 	w.Write([]byte(`{"status":"deleted"}`))
+}
+
+import (
+	"net/url"
+	"time"
+)
+
+func connectDB(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
+	// Ensure sslmode=require
+	if !strings.Contains(rawURL, "sslmode=") {
+		sep := "?"
+		if strings.Contains(rawURL, "?") {
+			sep = "&"
+		}
+		rawURL += sep + "sslmode=require"
+	}
+	// Retry up to 10 times
+	for i := 0; i < 10; i++ {
+		pool, err := pgxpool.New(ctx, rawURL)
+		if err == nil {
+			return pool, nil
+		}
+		log.Printf("Database connection attempt %d failed: %v. Retrying in 5s...", i+1, err)
+		time.Sleep(5 * time.Second)
+	}
+	return pgxpool.New(ctx, rawURL)
 }
