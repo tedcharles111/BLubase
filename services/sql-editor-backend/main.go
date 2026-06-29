@@ -1,11 +1,14 @@
 package main
 
+import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -16,54 +19,48 @@ package main
 var pool *pgxpool.Pool
 
 func main() {
+	ctx := context.Background()
 	var err error
-	pool, err = pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
-	if err != nil {
-		log.Fatal(err)
-	}
+	pool, err = connectDB(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil { log.Fatal(err) }
 
-	pool.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS sql_history (
-		id SERIAL PRIMARY KEY,
-		user_id TEXT,
-		query TEXT,
+	// Ensure history table
+	pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS sql_history (
+		id SERIAL PRIMARY KEY, user_id TEXT, query TEXT,
 		created_at TIMESTAMPTZ DEFAULT now()
 	)`)
 
 	r := chi.NewRouter()
-	r.Get("/sql", runSQLHandler)          // existing GET
-	r.Post("/sql", runSQLHandlerPOST)    // new POST (accepts JSON body)
+	r.Get("/sql", runSQLHandler)
 	r.Get("/history", historyHandler)
+	r.Post("/import", importHandler)
 	log.Println("SQL Editor on :3007")
 	log.Fatal(http.ListenAndServe(":3007", r))
 }
 
+func connectDB(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
+	if !strings.Contains(rawURL, "sslmode=") {
+		sep := "?"
+		if strings.Contains(rawURL, "?") { sep = "&" }
+		rawURL += sep + "sslmode=require"
+	}
+	for i := 0; i < 10; i++ {
+		pool, err := pgxpool.New(ctx, rawURL)
+		if err == nil { return pool, nil }
+		log.Printf("DB connection attempt %d failed: %v. Retrying in 5s...", i+1, err)
+		time.Sleep(5 * time.Second)
+	}
+	return pgxpool.New(ctx, rawURL)
+}
+
 func extractUserID(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return ""
-	}
+	if !strings.HasPrefix(auth, "Bearer ") { return "" }
 	return strings.TrimPrefix(auth, "Bearer ")
 }
 
 func runSQLHandler(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("query")
-	executeQuery(w, r, query)
-}
-
-func runSQLHandlerPOST(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Query string `json:"query"`
-	}
-	body, _ := io.ReadAll(r.Body)
-	json.Unmarshal(body, &req)
-	executeQuery(w, r, req.Query)
-}
-
-func executeQuery(w http.ResponseWriter, r *http.Request, query string) {
-	if query == "" {
-		http.Error(w, `{"error":"query required"}`, 400)
-		return
-	}
 	userID := extractUserID(r)
 	rows, err := pool.Query(context.Background(), query)
 	if err != nil {
@@ -72,7 +69,6 @@ func executeQuery(w http.ResponseWriter, r *http.Request, query string) {
 		return
 	}
 	defer rows.Close()
-
 	pool.Exec(context.Background(), `INSERT INTO sql_history (user_id, query) VALUES ($1,$2)`, userID, query)
 
 	cols := rows.FieldDescriptions()
@@ -80,9 +76,7 @@ func executeQuery(w http.ResponseWriter, r *http.Request, query string) {
 	for rows.Next() {
 		vals, _ := rows.Values()
 		rowMap := map[string]interface{}{}
-		for i, col := range cols {
-			rowMap[string(col.Name)] = vals[i]
-		}
+		for i, col := range cols { rowMap[string(col.Name)] = vals[i] }
 		result = append(result, rowMap)
 	}
 	json.NewEncoder(w).Encode(result)
@@ -91,9 +85,7 @@ func executeQuery(w http.ResponseWriter, r *http.Request, query string) {
 func historyHandler(w http.ResponseWriter, r *http.Request) {
 	userID := extractUserID(r)
 	limit := r.URL.Query().Get("limit")
-	if limit == "" {
-		limit = "10"
-	}
+	if limit == "" { limit = "10" }
 	rows, _ := pool.Query(context.Background(),
 		`SELECT query, created_at FROM sql_history WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
 	defer rows.Close()
@@ -107,27 +99,19 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(history)
 }
 
-	"net/url"
-	"time"
-)
-
-func connectDB(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
-	// Ensure sslmode=require
-	if !strings.Contains(rawURL, "sslmode=") {
-		sep := "?"
-		if strings.Contains(rawURL, "?") {
-			sep = "&"
-		}
-		rawURL += sep + "sslmode=require"
+func importHandler(w http.ResponseWriter, r *http.Request) {
+	r.ParseMultipartForm(10 << 20)
+	file, _, err := r.FormFile("sqlfile")
+	if err != nil { http.Error(w, `{"error":"missing sqlfile"}`, 400); return }
+	defer file.Close()
+	data, _ := io.ReadAll(file)
+	cmd := exec.Command("psql", os.Getenv("DATABASE_URL"), "-c", string(data))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write(out)
+		w.WriteHeader(500)
+		return
 	}
-	// Retry up to 10 times
-	for i := 0; i < 10; i++ {
-		pool, err := pgxpool.New(ctx, rawURL)
-		if err == nil {
-			return pool, nil
-		}
-		log.Printf("Database connection attempt %d failed: %v. Retrying in 5s...", i+1, err)
-		time.Sleep(5 * time.Second)
-	}
-	return pgxpool.New(ctx, rawURL)
+	w.Write([]byte(`{"status":"migration successful"}`))
 }
