@@ -57,3 +57,4 @@ CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
 # force rebuild Sun Jun 28 00:39:20 UTC 2026
 # force dns refresh Sun Jun 28 21:40:26 UTC 2026
 # force redeploy Mon Jun 29 16:06:32 UTC 2026
+# nginx CORS error-safe – Mon Jun 29 17:27:13 UTC 2026
