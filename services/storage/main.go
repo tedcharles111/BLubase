@@ -1,11 +1,12 @@
 package main
 
+import (
 	"context"
-	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -15,101 +16,55 @@ package main
 var db *pgxpool.Pool
 
 func main() {
+	ctx := context.Background()
 	var err error
-	db, err = pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
-	if err != nil {
-		log.Fatal(err)
-	}
+	db, err = connectDB(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil { log.Fatal(err) }
 
-	// Ensure tables exist
-	_, _ = db.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS storage_buckets (
-		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-		name TEXT NOT NULL UNIQUE,
-		public BOOLEAN DEFAULT true,
-		created_at TIMESTAMPTZ DEFAULT now()
-	)`)
-	_, _ = db.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS storage_files (
-		bucket TEXT NOT NULL,
-		filename TEXT NOT NULL,
-		data BYTEA,
-		mime_type TEXT,
-		size BIGINT,
+	// Ensure the storage_files table exists
+	_, _ = db.Exec(ctx, `CREATE TABLE IF NOT EXISTS storage_files (
+		bucket TEXT, filename TEXT, data BYTEA, mime_type TEXT, size BIGINT,
 		PRIMARY KEY (bucket, filename)
 	)`)
 
 	r := chi.NewRouter()
-
-	// Bucket management
-	r.Get("/buckets", listBucketsHandler)
-	r.Post("/buckets", createBucketHandler)
-	r.Delete("/buckets/{name}", deleteBucketHandler)
-
-	// File operations
 	r.Post("/upload/{bucket}/{filename}", uploadHandler)
 	r.Get("/download/{bucket}/{filename}", downloadHandler)
 	r.Delete("/delete/{bucket}/{filename}", deleteHandler)
-
-	log.Println("Storage API with buckets on :3004")
+	log.Println("PostgreSQL Storage API on :3004")
 	log.Fatal(http.ListenAndServe(":3004", r))
 }
 
-func listBucketsHandler(w http.ResponseWriter, r *http.Request) {
-	rows, _ := db.Query(context.Background(), `SELECT id, name, public, created_at FROM storage_buckets ORDER BY created_at DESC`)
-	defer rows.Close()
-	var buckets []map[string]interface{}
-	for rows.Next() {
-		var id, name string
-		var public bool
-		var createdAt time.Time
-		rows.Scan(&id, &name, &public, &createdAt)
-		buckets = append(buckets, map[string]interface{}{"id": id, "name": name, "public": public, "created_at": createdAt})
+func connectDB(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
+	if !strings.Contains(rawURL, "sslmode=") {
+		sep := "?"
+		if strings.Contains(rawURL, "?") { sep = "&" }
+		rawURL += sep + "sslmode=require"
 	}
-	json.NewEncoder(w).Encode(buckets)
-}
-
-func createBucketHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Name string; Public bool `json:"public"` }
-	json.NewDecoder(r.Body).Decode(&req)
-	if req.Name == "" {
-		http.Error(w, `{"error":"bucket name required"}`, 400)
-		return
+	for i := 0; i < 10; i++ {
+		pool, err := pgxpool.New(ctx, rawURL)
+		if err == nil { return pool, nil }
+		log.Printf("DB connection attempt %d failed: %v. Retrying in 5s...", i+1, err)
+		time.Sleep(5 * time.Second)
 	}
-	_, err := db.Exec(context.Background(), `INSERT INTO storage_buckets (name, public) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING`, req.Name, req.Public)
-	if err != nil {
-		http.Error(w, `{"error":"database error"}`, 500)
-		return
-	}
-	w.Write([]byte(`{"status":"created"}`))
-}
-
-func deleteBucketHandler(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	_, _ = db.Exec(context.Background(), `DELETE FROM storage_files WHERE bucket=$1`, name)
-	_, _ = db.Exec(context.Background(), `DELETE FROM storage_buckets WHERE name=$1`, name)
-	w.Write([]byte(`{"status":"deleted"}`))
+	return pgxpool.New(ctx, rawURL)
 }
 
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
 	filename := chi.URLParam(r, "filename")
 	file, header, err := r.FormFile("file")
-	if err != nil {
-		http.Error(w, "file required", 400)
-		return
-	}
+	if err != nil { http.Error(w, "file required", 400); return }
 	defer file.Close()
-	data, _ := io.ReadAll(file)
+	data, err := io.ReadAll(file)
+	if err != nil { http.Error(w, "read error", 500); return }
 	mime := header.Header.Get("Content-Type")
-	if mime == "" {
-		mime = "application/octet-stream"
-	}
+	if mime == "" { mime = "application/octet-stream" }
 	_, err = db.Exec(context.Background(),
-		`INSERT INTO storage_files (bucket, filename, data, mime_type, size) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (bucket, filename) DO UPDATE SET data=$3, mime_type=$4, size=$5`,
+		`INSERT INTO storage_files (bucket, filename, data, mime_type, size) VALUES ($1,$2,$3,$4,$5)
+		 ON CONFLICT (bucket, filename) DO UPDATE SET data=$3, mime_type=$4, size=$5`,
 		bucket, filename, data, mime, len(data))
-	if err != nil {
-		http.Error(w, "db error", 500)
-		return
-	}
+	if err != nil { http.Error(w, "db error", 500); return }
 	w.Write([]byte("uploaded"))
 }
 
@@ -118,11 +73,10 @@ func downloadHandler(w http.ResponseWriter, r *http.Request) {
 	filename := chi.URLParam(r, "filename")
 	var data []byte
 	var mime string
-	err := db.QueryRow(context.Background(), `SELECT data, mime_type FROM storage_files WHERE bucket=$1 AND filename=$2`, bucket, filename).Scan(&data, &mime)
-	if err != nil {
-		http.Error(w, "not found", 404)
-		return
-	}
+	err := db.QueryRow(context.Background(),
+		`SELECT data, mime_type FROM storage_files WHERE bucket=$1 AND filename=$2`,
+		bucket, filename).Scan(&data, &mime)
+	if err != nil { http.Error(w, "not found", 404); return }
 	w.Header().Set("Content-Type", mime)
 	w.Write(data)
 }
@@ -130,31 +84,8 @@ func downloadHandler(w http.ResponseWriter, r *http.Request) {
 func deleteHandler(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
 	filename := chi.URLParam(r, "filename")
-	_, _ = db.Exec(context.Background(), `DELETE FROM storage_files WHERE bucket=$1 AND filename=$2`, bucket, filename)
+	_, err := db.Exec(context.Background(),
+		`DELETE FROM storage_files WHERE bucket=$1 AND filename=$2`, bucket, filename)
+	if err != nil { http.Error(w, "db error", 500); return }
 	w.Write([]byte("deleted"))
-}
-
-	"net/url"
-	"time"
-)
-
-func connectDB(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
-	// Ensure sslmode=require
-	if !strings.Contains(rawURL, "sslmode=") {
-		sep := "?"
-		if strings.Contains(rawURL, "?") {
-			sep = "&"
-		}
-		rawURL += sep + "sslmode=require"
-	}
-	// Retry up to 10 times
-	for i := 0; i < 10; i++ {
-		pool, err := pgxpool.New(ctx, rawURL)
-		if err == nil {
-			return pool, nil
-		}
-		log.Printf("Database connection attempt %d failed: %v. Retrying in 5s...", i+1, err)
-		time.Sleep(5 * time.Second)
-	}
-	return pgxpool.New(ctx, rawURL)
 }
