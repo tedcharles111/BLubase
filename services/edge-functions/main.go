@@ -1,5 +1,6 @@
 package main
 
+import (
 	"bytes"
 	"context"
 	"encoding/json"
@@ -7,6 +8,8 @@ package main
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,64 +18,49 @@ package main
 var db *pgxpool.Pool
 
 func main() {
+	ctx := context.Background()
 	var err error
-	db, err = pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
-	if err != nil {
-		log.Fatal(err)
-	}
+	db, err = connectDB(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil { log.Fatal(err) }
 
-	// Ensure secrets table exists
-	_, _ = db.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS edge_secrets (
-		function_name TEXT NOT NULL,
-		key TEXT NOT NULL,
-		value TEXT NOT NULL,
-		PRIMARY KEY (function_name, key)
-	)`)
-
-	// Ensure functions table exists (to store code)
-	_, _ = db.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS edge_functions (
-		name TEXT PRIMARY KEY,
-		code TEXT NOT NULL,
-		updated_at TIMESTAMPTZ DEFAULT now()
-	)`)
+	_, _ = db.Exec(ctx, `CREATE TABLE IF NOT EXISTS edge_functions (name TEXT PRIMARY KEY, code TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT now())`)
+	_, _ = db.Exec(ctx, `CREATE TABLE IF NOT EXISTS edge_secrets (function_name TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (function_name, key))`)
 
 	r := chi.NewRouter()
-
-	// CRUD for functions
 	r.Post("/functions", createFunctionHandler)
 	r.Get("/functions", listFunctionsHandler)
 	r.Delete("/functions/{name}", deleteFunctionHandler)
-
-	// CRUD for secrets
 	r.Post("/secrets", addSecretHandler)
 	r.Get("/secrets/{function}", listSecretsHandler)
 	r.Delete("/secrets/{function}/{key}", deleteSecretHandler)
-
-	// Invoke
 	r.Post("/invoke/{name}", invokeHandler)
-
 	log.Println("Edge Functions Manager on :3005")
 	log.Fatal(http.ListenAndServe(":3005", r))
 }
 
-// ------------------ Functions ------------------
+func connectDB(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
+	if !strings.Contains(rawURL, "sslmode=") {
+		sep := "?"
+		if strings.Contains(rawURL, "?") { sep = "&" }
+		rawURL += sep + "sslmode=require"
+	}
+	for i := 0; i < 10; i++ {
+		pool, err := pgxpool.New(ctx, rawURL)
+		if err == nil { return pool, nil }
+		log.Printf("DB connection attempt %d failed: %v. Retrying in 5s...", i+1, err)
+		time.Sleep(5 * time.Second)
+	}
+	return pgxpool.New(ctx, rawURL)
+}
+
 func createFunctionHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name string `json:"name"`
-		Code string `json:"code"`
-	}
+	var req struct{ Name, Code string }
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Name == "" || req.Code == "" {
-		http.Error(w, `{"error":"name and code required"}`, 400)
-		return
-	}
+	if req.Name == "" || req.Code == "" { http.Error(w, `{"error":"name and code required"}`, 400); return }
 	_, err := db.Exec(context.Background(),
 		`INSERT INTO edge_functions (name, code) VALUES ($1,$2) ON CONFLICT (name) DO UPDATE SET code=$2, updated_at=now()`,
 		req.Name, req.Code)
-	if err != nil {
-		http.Error(w, `{"error":"database error"}`, 500)
-		return
-	}
+	if err != nil { http.Error(w, `{"error":"database error"}`, 500); return }
 	w.Write([]byte(`{"status":"created"}`))
 }
 
@@ -95,32 +83,22 @@ func deleteFunctionHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"deleted"}`))
 }
 
-// ------------------ Secrets ------------------
 func addSecretHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Function string `json:"function"`
-		Key      string `json:"key"`
-		Value    string `json:"value"`
-	}
+	var req struct{ Function, Key, Value string }
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Function == "" || req.Key == "" || req.Value == "" {
-		http.Error(w, `{"error":"function, key, value required"}`, 400)
-		return
+		http.Error(w, `{"error":"function, key, value required"}`, 400); return
 	}
 	_, err := db.Exec(context.Background(),
 		`INSERT INTO edge_secrets (function_name, key, value) VALUES ($1,$2,$3) ON CONFLICT (function_name, key) DO UPDATE SET value=$3`,
 		req.Function, req.Key, req.Value)
-	if err != nil {
-		http.Error(w, `{"error":"database error"}`, 500)
-		return
-	}
+	if err != nil { http.Error(w, `{"error":"database error"}`, 500); return }
 	w.Write([]byte(`{"status":"created"}`))
 }
 
 func listSecretsHandler(w http.ResponseWriter, r *http.Request) {
 	function := chi.URLParam(r, "function")
-	rows, _ := db.Query(context.Background(),
-		`SELECT key, value FROM edge_secrets WHERE function_name=$1`, function)
+	rows, _ := db.Query(context.Background(), `SELECT key, value FROM edge_secrets WHERE function_name=$1`, function)
 	defer rows.Close()
 	secrets := map[string]string{}
 	for rows.Next() {
@@ -138,21 +116,13 @@ func deleteSecretHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"deleted"}`))
 }
 
-// ------------------ Invoke ------------------
 func invokeHandler(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
-	// Fetch function code
 	var code string
-	err := db.QueryRow(context.Background(),
-		`SELECT code FROM edge_functions WHERE name=$1`, name).Scan(&code)
-	if err != nil {
-		http.Error(w, `{"error":"function not found"}`, 404)
-		return
-	}
+	err := db.QueryRow(context.Background(), `SELECT code FROM edge_functions WHERE name=$1`, name).Scan(&code)
+	if err != nil { http.Error(w, `{"error":"function not found"}`, 404); return }
 
-	// Fetch secrets for this function
-	rows, _ := db.Query(context.Background(),
-		`SELECT key, value FROM edge_secrets WHERE function_name=$1`, name)
+	rows, _ := db.Query(context.Background(), `SELECT key, value FROM edge_secrets WHERE function_name=$1`, name)
 	envVars := []string{}
 	for rows.Next() {
 		var k, v string
@@ -160,7 +130,6 @@ func invokeHandler(w http.ResponseWriter, r *http.Request) {
 		envVars = append(envVars, k+"="+v)
 	}
 
-	// Execute deno eval with code and environment
 	cmd := exec.Command("deno", "eval", code)
 	cmd.Env = append(os.Environ(), envVars...)
 	var out bytes.Buffer
@@ -174,29 +143,4 @@ func invokeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain")
 	w.Write(out.Bytes())
-}
-
-	"net/url"
-	"time"
-)
-
-func connectDB(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
-	// Ensure sslmode=require
-	if !strings.Contains(rawURL, "sslmode=") {
-		sep := "?"
-		if strings.Contains(rawURL, "?") {
-			sep = "&"
-		}
-		rawURL += sep + "sslmode=require"
-	}
-	// Retry up to 10 times
-	for i := 0; i < 10; i++ {
-		pool, err := pgxpool.New(ctx, rawURL)
-		if err == nil {
-			return pool, nil
-		}
-		log.Printf("Database connection attempt %d failed: %v. Retrying in 5s...", i+1, err)
-		time.Sleep(5 * time.Second)
-	}
-	return pgxpool.New(ctx, rawURL)
 }
