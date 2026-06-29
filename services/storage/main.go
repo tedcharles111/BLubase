@@ -65,7 +65,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		 ON CONFLICT (bucket, filename) DO UPDATE SET data=$3, mime_type=$4, size=$5`,
 		bucket, filename, data, mime, len(data))
 	if err != nil { http.Error(w, "db error", 500); return }
-	w.Write([]byte("uploaded"))
+	w.Write([]byte(`{"status":"uploaded"}`))
 }
 
 func downloadHandler(w http.ResponseWriter, r *http.Request) {
