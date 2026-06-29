@@ -31,6 +31,7 @@ func main() {
 
 	r := chi.NewRouter()
 	r.Get("/sql", runSQLHandler)
+	r.Post("/sql", runSQLHandler)
 	r.Get("/history", historyHandler)
 	r.Post("/import", importHandler)
 	log.Println("SQL Editor on :3007")
@@ -60,6 +61,11 @@ func extractUserID(r *http.Request) string {
 
 func runSQLHandler(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("query")
+	if query == "" { 
+		var req struct{ Query string `json:"query"` } 
+		json.NewDecoder(r.Body).Decode(&req) 
+		query = req.Query 
+	}
 	userID := extractUserID(r)
 	rows, err := pool.Query(context.Background(), query)
 	if err != nil {
