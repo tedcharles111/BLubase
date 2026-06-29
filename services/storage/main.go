@@ -1,6 +1,5 @@
 package main
 
-import (
 	"context"
 	"encoding/json"
 	"io"
@@ -135,7 +134,6 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("deleted"))
 }
 
-import (
 	"net/url"
 	"time"
 )

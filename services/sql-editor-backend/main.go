@@ -1,6 +1,5 @@
 package main
 
-import (
 	"context"
 	"encoding/json"
 	"io"
@@ -108,7 +107,6 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(history)
 }
 
-import (
 	"net/url"
 	"time"
 )

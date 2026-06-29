@@ -1,6 +1,5 @@
 package main
 
-import (
 	"bytes"
 	"context"
 	"encoding/json"
@@ -177,7 +176,6 @@ func invokeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(out.Bytes())
 }
 
-import (
 	"net/url"
 	"time"
 )
