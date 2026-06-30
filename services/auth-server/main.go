@@ -121,6 +121,8 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := token.SignedString(jwtSecret)
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	http.Redirect(w, r, "https://themultiverse.build/dashboard?token="+signed, http.StatusFound)
+	return
 }
 
 func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
@@ -241,6 +243,8 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := jwtToken.SignedString(jwtSecret)
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	http.Redirect(w, r, "https://themultiverse.build/dashboard?token="+signed, http.StatusFound)
+	return
 }
 
 func loadOAuthConfigs() {
