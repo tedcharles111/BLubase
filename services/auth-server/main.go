@@ -50,8 +50,6 @@ func main() {
 	dbPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS project_oauth_providers (project_ref TEXT NOT NULL, provider TEXT NOT NULL, client_id TEXT, client_secret TEXT, enabled BOOLEAN DEFAULT false, PRIMARY KEY (project_ref, provider))`)
 
 	// Seed Google & GitHub credentials for project oMVsv2 (from earlier config)
-	dbPool.Exec(ctx, `INSERT INTO project_oauth_providers (project_ref, provider, client_id, client_secret, enabled) VALUES ('oMVsv2', 'google', '998494570170-7mcv4n1ifb0l2g4t9sgh0idn1s4edn1c.apps.googleusercontent.com', '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', true) ON CONFLICT (project_ref, provider) DO UPDATE SET client_id=EXCLUDED.client_id, client_secret=EXCLUDED.client_secret, enabled=true`)
-	dbPool.Exec(ctx, `INSERT INTO project_oauth_providers (project_ref, provider, client_id, client_secret, enabled) VALUES ('oMVsv2', 'github', 'Iv23liS3vHgocHDsSR2i', '2d53775a53d755e073bf9deae5798478a57cd11a', true) ON CONFLICT (project_ref, provider) DO UPDATE SET client_id=EXCLUDED.client_id, client_secret=EXCLUDED.client_secret, enabled=true`)
 
 	loadOAuthConfigs()
 
