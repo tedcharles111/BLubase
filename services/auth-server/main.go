@@ -108,7 +108,13 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	logActivity(r, "signup", req.Email)
-	w.Write([]byte(`{"message":"signup successful"}`))
+	var newUserID string
+	err = dbPool.QueryRow(context.Background(), `SELECT id::text FROM platform_users WHERE email=$1`, req.Email).Scan(&newUserID)
+	if err != nil {
+		http.Error(w, `{"error":"user created but could not fetch ID"}`, 500)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"message": "signup successful", "userId": newUserID})
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
