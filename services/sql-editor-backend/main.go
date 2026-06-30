@@ -50,6 +50,14 @@ func main() {
 }
 
 func runSQLHandler(w http.ResponseWriter, r *http.Request) {
+	// Helper to convert byte arrays to UUID strings
+	toUUID := func(val interface{}) interface{} {
+		if b, ok := val.([]byte); ok && len(b) == 16 {
+			return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+		}
+		return val
+	}
+
 	var query string
 	if r.Method == "POST" {
 		var req struct{ Query string `json:"query"` }
@@ -86,7 +94,7 @@ func runSQLHandler(w http.ResponseWriter, r *http.Request) {
 		vals, _ := rows.Values()
 		rowMap := map[string]interface{}{}
 		for i, col := range cols {
-			rowMap[string(col.Name)] = vals[i]
+			rowMap[string(col.Name)] = toUUID(vals[i])
 		}
 		result = append(result, rowMap)
 	}
