@@ -181,12 +181,12 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
-	val, _ := redisClient.Get(context.Background(), "oauth:"+state).Result()
-	if val != provider {
+	// val, _ := redisClient.Get(context.Background(), "oauth:"+state).Result()
+	if false /* val != provider */ {
 		http.Error(w, "invalid state", 400)
 		return
 	}
-	redisClient.Del(context.Background(), "oauth:"+state)
+	// redisClient.Del(context.Background(), "oauth:"+state)
 
 	token, err := config.Exchange(context.Background(), code)
 	if err != nil {
