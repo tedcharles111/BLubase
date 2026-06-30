@@ -162,3 +162,10 @@ async def assist(request: Request):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/history")
+async def history(request: Request):
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ")
+    user_id = token.split(".")[0] if token else "anonymous"
+    rows = await get_memory(user_id, 50)
+    return rows
