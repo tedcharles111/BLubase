@@ -1,11 +1,11 @@
-name: Keep Render API alive
+name: Keep Blubase alive
 on:
   schedule:
-    - cron: '*/10 * * * *'   # every 10 minutes
+    - cron: '*/5 * * * *'   # every 5 minutes
   workflow_dispatch:
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
       - name: Ping API
-        run: curl -s https://blubase.onrender.com/?limit=1
+        run: curl -s https://blubase.onrender.com/health | grep ok
