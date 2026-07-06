@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 
 	"github.com/go-chi/chi/v5"
@@ -39,15 +38,15 @@ func main() {
 	}
 
 	r := chi.NewRouter()
+	// The {filename:.*} wildcard captures the entire remaining path, including slashes
 	r.Post("/upload/{bucket}/{filename:.*}", uploadHandler)
 	r.Get("/download/{bucket}/{filename:.*}", downloadHandler)
-	r.Delete("/delete/{bucket}/{filename}", deleteHandler)
+	r.Delete("/delete/{bucket}/{filename:.*}", deleteHandler)
 	log.Println("Storage API on :3004")
 	log.Fatal(http.ListenAndServe(":3004", r))
 }
 
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
-	filename, _ = url.PathUnescape(filename)
 	bucket := chi.URLParam(r, "bucket")
 	filename := chi.URLParam(r, "filename")
 	file, header, err := r.FormFile("file")
@@ -85,7 +84,6 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func downloadHandler(w http.ResponseWriter, r *http.Request) {
-	filename, _ = url.PathUnescape(filename)
 	bucket := chi.URLParam(r, "bucket")
 	filename := chi.URLParam(r, "filename")
 	var data []byte
@@ -112,4 +110,3 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Write([]byte("deleted"))
 }
-# force redeploy Mon Jul  6 18:03:53 UTC 2026
