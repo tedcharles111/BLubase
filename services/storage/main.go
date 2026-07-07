@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,7 +23,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Ensure the storage_files table exists
 	_, err = db.Exec(context.Background(), `
 		CREATE TABLE IF NOT EXISTS storage_files (
 			bucket TEXT,
@@ -38,17 +38,33 @@ func main() {
 	}
 
 	r := chi.NewRouter()
-	// The {filename:.*} wildcard captures the entire remaining path, including slashes
-	r.Post("/upload/{bucket}/{filename:.*}", uploadHandler)
-	r.Get("/download/{bucket}/{filename:.*}", downloadHandler)
-	r.Delete("/delete/{bucket}/{filename:.*}", deleteHandler)
-	log.Println("Storage API on :3004")
+	// Use a single route that captures the bucket, then manually extracts the filename
+	r.Post("/upload/{bucket}", uploadHandler)
+	r.Get("/download/{bucket}", downloadHandler)
+	r.Delete("/delete/{bucket}", deleteHandler)
+	log.Println("Storage API on :3004 (manual path extraction)")
 	log.Fatal(http.ListenAndServe(":3004", r))
+}
+
+// extractFilename returns the part of the URL after "/<bucket>/"
+func extractFilename(r *http.Request, bucket string) string {
+	path := r.URL.Path
+	prefix := fmt.Sprintf("/%s/", bucket)
+	idx := strings.Index(path, prefix)
+	if idx == -1 {
+		return ""
+	}
+	// Return everything after the prefix
+	return path[idx+len(prefix):]
 }
 
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
-	filename := chi.URLParam(r, "filename")
+	filename := extractFilename(r, bucket)
+	if filename == "" {
+		http.Error(w, "filename required", 400)
+		return
+	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, "file required", 400)
@@ -74,7 +90,6 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return the public download URL
 	url := fmt.Sprintf("https://blubase.onrender.com/storage/download/%s/%s", bucket, filename)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
@@ -85,7 +100,11 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 func downloadHandler(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
-	filename := chi.URLParam(r, "filename")
+	filename := extractFilename(r, bucket)
+	if filename == "" {
+		http.Error(w, "filename required", 400)
+		return
+	}
 	var data []byte
 	var mime string
 	err := db.QueryRow(context.Background(),
@@ -101,7 +120,11 @@ func downloadHandler(w http.ResponseWriter, r *http.Request) {
 
 func deleteHandler(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
-	filename := chi.URLParam(r, "filename")
+	filename := extractFilename(r, bucket)
+	if filename == "" {
+		http.Error(w, "filename required", 400)
+		return
+	}
 	_, err := db.Exec(context.Background(),
 		`DELETE FROM storage_files WHERE bucket=$1 AND filename=$2`, bucket, filename)
 	if err != nil {
@@ -110,5 +133,3 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Write([]byte("deleted"))
 }
-// force catch-all deploy Tue Jul  7 00:16:30 UTC 2026
-// force redeploy Tue Jul  7 00:25:16 UTC 2026
