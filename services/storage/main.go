@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,33 +37,26 @@ func main() {
 	}
 
 	r := chi.NewRouter()
-	// Use a single route that captures the bucket, then manually extracts the filename
-	r.Post("/upload/{bucket}", uploadHandler)
-	r.Get("/download/{bucket}", downloadHandler)
-	r.Delete("/delete/{bucket}", deleteHandler)
-	log.Println("Storage API on :3004 (manual path extraction)")
+	// The * wildcard captures the entire remaining path, including slashes
+	r.Post("/upload/{bucket}/*", uploadHandler)
+	r.Get("/download/{bucket}/*", downloadHandler)
+	r.Delete("/delete/{bucket}/*", deleteHandler)
+	log.Println("Storage API on :3004 (wildcard * route)")
 	log.Fatal(http.ListenAndServe(":3004", r))
-}
-
-// extractFilename returns the part of the URL after "/<bucket>/"
-func extractFilename(r *http.Request, bucket string) string {
-	path := r.URL.Path
-	prefix := fmt.Sprintf("/%s/", bucket)
-	idx := strings.Index(path, prefix)
-	if idx == -1 {
-		return ""
-	}
-	// Return everything after the prefix
-	return path[idx+len(prefix):]
 }
 
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
-	filename := extractFilename(r, bucket)
+	// The * wildcard gives us everything after the bucket, with a leading slash
+	filename := chi.URLParam(r, "*")
+	if len(filename) > 0 && filename[0] == '/' {
+		filename = filename[1:] // remove leading slash
+	}
 	if filename == "" {
 		http.Error(w, "filename required", 400)
 		return
 	}
+
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, "file required", 400)
@@ -80,6 +72,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	if mime == "" {
 		mime = "application/octet-stream"
 	}
+
 	_, err = db.Exec(context.Background(),
 		`INSERT INTO storage_files (bucket, filename, data, mime_type, size)
 		 VALUES ($1,$2,$3,$4,$5)
@@ -100,7 +93,10 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 func downloadHandler(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
-	filename := extractFilename(r, bucket)
+	filename := chi.URLParam(r, "*")
+	if len(filename) > 0 && filename[0] == '/' {
+		filename = filename[1:]
+	}
 	if filename == "" {
 		http.Error(w, "filename required", 400)
 		return
@@ -120,7 +116,10 @@ func downloadHandler(w http.ResponseWriter, r *http.Request) {
 
 func deleteHandler(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
-	filename := extractFilename(r, bucket)
+	filename := chi.URLParam(r, "*")
+	if len(filename) > 0 && filename[0] == '/' {
+		filename = filename[1:]
+	}
 	if filename == "" {
 		http.Error(w, "filename required", 400)
 		return
