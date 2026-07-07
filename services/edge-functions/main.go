@@ -12,10 +12,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var db *pgxpool.Pool
 
 func main() {
 	ctx := context.Background()
@@ -38,19 +36,16 @@ func main() {
 	log.Fatal(http.ListenAndServe(":3005", r))
 }
 
-func connectDB(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
 	if !strings.Contains(rawURL, "sslmode=") {
 		sep := "?"
 		if strings.Contains(rawURL, "?") { sep = "&" }
 		rawURL += sep + "sslmode=require"
 	}
 	for i := 0; i < 10; i++ {
-		pool, err := pgxpool.New(ctx, rawURL)
 		if err == nil { return pool, nil }
 		log.Printf("DB connection attempt %d failed: %v. Retrying in 5s...", i+1, err)
 		time.Sleep(5 * time.Second)
 	}
-	return pgxpool.New(ctx, rawURL)
 }
 
 func createFunctionHandler(w http.ResponseWriter, r *http.Request) {
