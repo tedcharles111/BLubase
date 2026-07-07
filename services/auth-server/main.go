@@ -171,10 +171,15 @@ func oauthLoginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("panic in OAuth callback: %v", r)
+		}
+	}()
 	provider := chi.URLParam(r, "provider")
 	config, ok := oauthConfigs[provider]
 	if !ok {
-		http.Error(w, "provider not configured", 404)
+		http.Error(w, `{"error":"provider not configured"}`, 404)
 		return
 	}
 
@@ -187,7 +192,7 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	token, err := config.Exchange(context.Background(), code)
 	if err != nil {
-		http.Error(w, "token exchange failed: "+err.Error(), 500)
+		http.Error(w, `{"error":"token exchange failed"}`, 500)
 		return
 	}
 
@@ -221,7 +226,7 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if email == "" {
-		http.Error(w, "could not fetch email", 500)
+		http.Error(w, `{"error":"could not fetch email"}`, 500)
 		return
 	}
 
