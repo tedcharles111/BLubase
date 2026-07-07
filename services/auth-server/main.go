@@ -52,6 +52,8 @@ func main() {
 	r.Post("/forgot-password", forgotPasswordHandler)
 	r.Post("/reset-password", resetPasswordHandler)
 	r.Get("/auth/google/login", googleLoginHandler)
+	r.Get("/auth/google/callback", googleCallbackHandler) 
+	r.Get("/auth/github/callback", githubCallbackHandler)
 	r.Get("/auth/github/login", githubLoginHandler)
 
 	log.Println("Auth server on :3001")
@@ -185,4 +187,38 @@ func githubLoginHandler(w http.ResponseWriter, r *http.Request) {
 		"Iv23liS3vHgocHDsSR2i",
 		"https://blubase.onrender.com/auth/github/callback")
 	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"net/url"
+	"strings"
+)
+
+var oauthStates = map[string]string{}
+
+func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, `{"error":"missing code"}`, 400)
+		return
+	}
+	// Exchange code for token (simplified – in production, use the real OAuth2 exchange)
+	// For now, we'll just extract the email from the ID token (a real implementation would validate)
+	// Since we don't have the real token exchange, we'll redirect to a frontend page with a dummy token.
+	// Replace this with a real implementation later.
+	http.Redirect(w, r, "https://themultiverse.build/dashboard?token=google_oauth_demo", http.StatusFound)
+}
+
+func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, `{"error":"missing code"}`, 400)
+		return
+	}
+	// Same simplified approach
+	http.Redirect(w, r, "https://themultiverse.build/dashboard?token=github_oauth_demo", http.StatusFound)
 }
