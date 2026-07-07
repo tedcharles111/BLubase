@@ -51,6 +51,8 @@ func main() {
 	r.Post("/login", loginHandler)
 	r.Post("/forgot-password", forgotPasswordHandler)
 	r.Post("/reset-password", resetPasswordHandler)
+	r.Get("/auth/google/login", googleLoginHandler)
+	r.Get("/auth/github/login", githubLoginHandler)
 
 	log.Println("Auth server on :3001")
 	log.Fatal(http.ListenAndServe(":3001", r))
@@ -169,4 +171,18 @@ func resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Write([]byte(`{"message":"password updated"}`))
+}
+
+func googleLoginHandler(w http.ResponseWriter, r *http.Request) {
+	redirectURL := fmt.Sprintf("https://accounts.google.com/o/oauth2/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=email",
+		"998494570170-7mcv4n1ifb0l2g4t9sgh0idn1s4edn1c.apps.googleusercontent.com",
+		"https://blubase.onrender.com/auth/google/callback")
+	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+func githubLoginHandler(w http.ResponseWriter, r *http.Request) {
+	redirectURL := fmt.Sprintf("https://github.com/login/oauth/authorize?client_id=%s&redirect_uri=%s&scope=user:email",
+		"Iv23liS3vHgocHDsSR2i",
+		"https://blubase.onrender.com/auth/github/callback")
+	http.Redirect(w, r, redirectURL, http.StatusFound)
 }

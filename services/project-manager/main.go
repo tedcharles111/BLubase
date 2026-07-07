@@ -239,7 +239,10 @@ func projectSignupHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
-	w.Write([]byte(`{"message":"signup successful"}`))
+	// Fetch the new user ID and return it
+	var newUserID string
+	controlDB.QueryRow(context.Background(), `SELECT id::text FROM `+tableName+` WHERE email=$1`, req.Email).Scan(&newUserID)
+	w.Write([]byte(`{"message":"signup successful","userId":"` + newUserID + `"}`))
 }
 
 func projectLoginHandler(w http.ResponseWriter, r *http.Request) {
