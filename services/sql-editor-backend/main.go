@@ -29,6 +29,10 @@ func main() {
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 	pool, err = pgxpool.NewWithConfig(context.Background(), config)
+	pool.Config().AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "DISCARD ALL")
+		return err
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
