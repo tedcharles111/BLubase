@@ -1,16 +1,18 @@
-
-  - name: blubase-pgdata
-    type: pserv
+services:
+  - name: blubase
+    type: web
     env: docker
-    image: postgres:16-alpine
+    dockerfilePath: ./Dockerfile
     disk:
-      name: pgdata
+      name: blubase-pgdata
       mountPath: /var/lib/postgresql/data
       sizeGB: 1
     envVars:
-      - key: POSTGRES_USER
-        value: blubase
-      - key: POSTGRES_PASSWORD
+      - key: DATABASE_URL
+        value: postgresql://blubase:blubase_secret@127.0.0.1:5432/blubase_control
+      - key: REDIS_URL
+        value: redis://127.0.0.1:6379
+      - key: JWT_SECRET
         generateValue: true
-      - key: POSTGRES_DB
-        value: blubase
+      - key: MISTRAL_API_KEY
+        value: bnXRKcksJSDzVBl6lWYM6LVeL7XKFZ0e
