@@ -271,6 +271,9 @@ func githubLoginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	redirectURL := "https://themultiverse.build/dashboard?token=google_oauth_demo"
+	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
 	code := r.URL.Query().Get("code")
 	if code == "" { http.Error(w, `{"error":"missing code"}`, 400); return }
 	email := "google_user@example.com" // Replace with real user info fetch
@@ -285,6 +288,9 @@ func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	redirectURL := "https://themultiverse.build/dashboard?token=github_oauth_demo"
+	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
 	code := r.URL.Query().Get("code")
 	if code == "" { http.Error(w, `{"error":"missing code"}`, 400); return }
 	email := "github_user@example.com" // Replace with real user info fetch
