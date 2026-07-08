@@ -1,0 +1,16 @@
+
+  - name: blubase-pgdata
+    type: pserv
+    env: docker
+    image: postgres:16-alpine
+    disk:
+      name: pgdata
+      mountPath: /var/lib/postgresql/data
+      sizeGB: 1
+    envVars:
+      - key: POSTGRES_USER
+        value: blubase
+      - key: POSTGRES_PASSWORD
+        generateValue: true
+      - key: POSTGRES_DB
+        value: blubase
