@@ -54,6 +54,8 @@ func main() {
 	r.Get("/auth/google/login", googleLoginHandler)
 	r.Get("/auth/google/callback", googleCallbackHandler) 
 	r.Get("/auth/github/callback", githubCallbackHandler)
+	r.Get("/auth/google/callback", googleCallbackHandler) 
+	r.Get("/auth/github/callback", githubCallbackHandler)
 	r.Get("/auth/github/login", githubLoginHandler)
 
 	log.Println("Auth server on :3001")
@@ -221,4 +223,62 @@ func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// Same simplified approach
 	http.Redirect(w, r, "https://themultiverse.build/dashboard?token=github_oauth_demo", http.StatusFound)
+}
+
+func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, `{"error":"missing code"}`, 400)
+		return
+	}
+
+	// Exchange code for token (real implementation should verify state and fetch user info)
+	// For now, we create a user based on a dummy email (in production, you'd fetch the real email)
+	email := "google_user@example.com" // Replace with actual user info fetch
+	var userID string
+	err := dbPool.QueryRow(context.Background(),
+		`INSERT INTO platform_users (email) VALUES ($1) ON CONFLICT (email) DO UPDATE SET email=$1 RETURNING id::text`, email).Scan(&userID)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+
+	// Generate JWT
+	claims := jwt.MapClaims{
+		"sub": userID, "email": email,
+		"iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, _ := token.SignedString(jwtSecret)
+
+	// Redirect to Multiverse dashboard with the token
+	redirectURL := "https://themultiverse.build/dashboard?token=" + signed
+	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, `{"error":"missing code"}`, 400)
+		return
+	}
+
+	email := "github_user@example.com" // Replace with actual user info fetch
+	var userID string
+	err := dbPool.QueryRow(context.Background(),
+		`INSERT INTO platform_users (email) VALUES ($1) ON CONFLICT (email) DO UPDATE SET email=$1 RETURNING id::text`, email).Scan(&userID)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+
+	claims := jwt.MapClaims{
+		"sub": userID, "email": email,
+		"iat": time.Now().Unix(), "exp": time.Now().Add(24*time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, _ := token.SignedString(jwtSecret)
+
+	redirectURL := "https://themultiverse.build/dashboard?token=" + signed
+	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
