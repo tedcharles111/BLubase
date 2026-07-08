@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -47,15 +48,15 @@ func main() {
 		log.Fatal(err)
 	}
 
+	ensureSchema(dbPool)           // create platform_users table
+	ensureAdminUser(dbPool)        // create dev@blubase.dev / DevPassword123 if missing
+
 	r := chi.NewRouter()
 	r.Post("/signup", signupHandler)
 	r.Post("/login", loginHandler)
 
-	// OAuth login redirects
 	r.Get("/auth/google/login", googleLoginHandler)
 	r.Get("/auth/github/login", githubLoginHandler)
-
-	// OAuth callbacks (real)
 	r.Get("/auth/google/callback", googleCallbackHandler)
 	r.Get("/auth/github/callback", githubCallbackHandler)
 
@@ -63,7 +64,62 @@ func main() {
 	log.Fatal(http.ListenAndServe(":3001", r))
 }
 
-// ---------- Signup / Login (unchanged) ----------
+// ---------- Auto‑provision schema + admin ----------
+func ensureSchema(db *pgxpool.Pool) {
+	_, err := db.Exec(context.Background(), `
+		CREATE TABLE IF NOT EXISTS platform_users (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			email TEXT UNIQUE NOT NULL,
+			password_hash TEXT,
+			phone TEXT,
+			username TEXT,
+			display_name TEXT,
+			photoURL TEXT,
+			avatar_url TEXT,
+			status TEXT DEFAULT 'active',
+			tier TEXT DEFAULT 'free',
+			prompts_used_today INT DEFAULT 0,
+			last_seen TIMESTAMPTZ DEFAULT now(),
+			is_admin BOOLEAN DEFAULT false,
+			created_at TIMESTAMPTZ DEFAULT now()
+		)
+	`)
+	if err != nil {
+		log.Printf("⚠️  Could not ensure platform_users table: %v", err)
+	} else {
+		log.Println("✅ platform_users table ready")
+	}
+}
+
+func ensureAdminUser(db *pgxpool.Pool) {
+	var exists bool
+	err := db.QueryRow(context.Background(),
+		"SELECT EXISTS(SELECT 1 FROM platform_users WHERE email=$1)", "dev@blubase.dev").Scan(&exists)
+	if err != nil {
+		log.Printf("⚠️  Could not check admin user: %v", err)
+		return
+	}
+	if exists {
+		log.Println("✅ Admin user already exists")
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte("DevPassword123"), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("❌ Failed to hash password: %v", err)
+		return
+	}
+	_, err = db.Exec(context.Background(),
+		"INSERT INTO platform_users (email, password_hash, is_admin, status) VALUES ($1, $2, true, 'active')",
+		"dev@blubase.dev", string(hash))
+	if err != nil {
+		log.Printf("❌ Failed to create admin user: %v", err)
+	} else {
+		log.Println("🚀 Created admin user dev@blubase.dev")
+	}
+}
+
+// ---------- Signup / Login ----------
 func signupHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email    string `json:"email"`
@@ -115,7 +171,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
 }
 
-// ---------- OAuth Handlers ----------
+// ---------- OAuth Handlers (real) ----------
 func googleLoginHandler(w http.ResponseWriter, r *http.Request) {
 	url := oauthConfigs["google"].AuthCodeURL("state")
 	http.Redirect(w, r, url, http.StatusFound)
@@ -132,14 +188,11 @@ func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"missing code"}`, 400)
 		return
 	}
-
 	token, err := oauthConfigs["google"].Exchange(context.Background(), code)
 	if err != nil {
 		http.Error(w, `{"error":"token exchange failed"}`, 500)
 		return
 	}
-
-	// Fetch user email
 	resp, err := http.Get("https://www.googleapis.com/oauth2/v2/userinfo?access_token=" + token.AccessToken)
 	if err != nil {
 		http.Error(w, `{"error":"failed to fetch user info"}`, 500)
@@ -153,7 +206,6 @@ func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"could not fetch email"}`, 500)
 		return
 	}
-
 	userID := upsertUser(gUser.Email)
 	claims := jwt.MapClaims{
 		"sub":   userID,
@@ -163,7 +215,7 @@ func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := jwtToken.SignedString(jwtSecret)
-	http.Redirect(w, r, "https://themultiverse.build/dashboard?token="+signed, http.StatusFound)
+	http.Redirect(w, r, "https://themultiverse.build/dashboard/callback?token="+signed, http.StatusFound)
 }
 
 func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
@@ -172,14 +224,11 @@ func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"missing code"}`, 400)
 		return
 	}
-
 	token, err := oauthConfigs["github"].Exchange(context.Background(), code)
 	if err != nil {
 		http.Error(w, `{"error":"token exchange failed"}`, 500)
 		return
 	}
-
-	// Fetch user emails
 	req, _ := http.NewRequest("GET", "https://api.github.com/user/emails", nil)
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	resp, err := http.DefaultClient.Do(req)
@@ -205,7 +254,6 @@ func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"could not fetch email"}`, 500)
 		return
 	}
-
 	userID := upsertUser(primaryEmail)
 	claims := jwt.MapClaims{
 		"sub":   userID,
@@ -215,7 +263,7 @@ func githubCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := jwtToken.SignedString(jwtSecret)
-	http.Redirect(w, r, "https://themultiverse.build/dashboard?token="+signed, http.StatusFound)
+	http.Redirect(w, r, "https://themultiverse.build/dashboard/callback?token="+signed, http.StatusFound)
 }
 
 func upsertUser(email string) string {
