@@ -38,14 +38,14 @@ RUN mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql
 USER postgres
 RUN initdb -D /var/lib/postgresql/data --encoding=UTF8 --lc-collate=C --lc-ctype=C
 # Set minimal configuration (shared buffers = 64 KB, max connections = 5)
-RUN echo "shared_buffers = 64kB" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "log_statement = 'none'" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "fsync = off" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "synchronous_commit = off" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "full_page_writes = off" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "max_wal_size = 1MB" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "min_wal_size = 80kB" >> /var/lib/postgresql/data/postgresql.conf
+    echo "shared_buffers = 128kB" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "max_wal_size = 2MB" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "min_wal_size = 2MB" >> /var/lib/postgresql/data/postgresql.conf
 
 # Start postgres, create the user and database, stop it
 RUN pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start && \
