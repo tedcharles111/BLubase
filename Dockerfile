@@ -45,6 +45,7 @@ RUN echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "shared_buffers = 128kB" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "max_wal_size = 64MB" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "min_wal_size = 32MB" >> /var/lib/postgresql/data/postgresql.conf
+    echo "log_min_messages = error" >> /var/lib/postgresql/data/postgresql.conf &&
 
 USER root
 # Copy the init SQL file and run it while postgres is temporarily running
