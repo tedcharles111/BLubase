@@ -37,18 +37,18 @@ RUN apk add --no-cache supervisor nginx curl postgresql postgresql-contrib redis
 RUN mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql
 USER postgres
 RUN initdb -D /var/lib/postgresql/data --encoding=UTF8 --lc-collate=C --lc-ctype=C
+# Validated PostgreSQL configuration (single RUN, no line‑continuation errors)
 RUN echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "log_statement = 'none'" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "log_min_messages = error" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "fsync = off" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "synchronous_commit = off" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "full_page_writes = off" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "shared_buffers = 128kB" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "max_wal_size = 64MB" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "min_wal_size = 32MB" >> /var/lib/postgresql/data/postgresql.conf
-    echo "log_min_messages = error" >> /var/lib/postgresql/data/postgresql.conf &&
 
 USER root
-# Copy the init SQL file and run it while postgres is temporarily running
 COPY services/postgres/init-minimal.sql /tmp/init-minimal.sql
 RUN su postgres -c "pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start" && \
     sleep 2 && \
@@ -62,10 +62,10 @@ COPY nginx/default.conf /etc/nginx/http.d/default.conf
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 
 # ---------- Immortal database restore ----------
-COPY seed.sql /app/seed.sql
 COPY start.sh /app/start.sh
 COPY restore-db.sh /app/restore-db.sh
-RUN chmod +x /app/restore-db.sh
+COPY seed.sql /app/seed.sql
+RUN chmod +x /app/start.sh /app/restore-db.sh
 
 EXPOSE 10000
 CMD ["/app/start.sh"]
