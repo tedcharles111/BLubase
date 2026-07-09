@@ -49,10 +49,10 @@ RUN echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
 USER root
 # Copy the init SQL file and run it while postgres is temporarily running
 COPY services/postgres/init-minimal.sql /tmp/init-minimal.sql
-RUN pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start && \
+RUN su postgres -c "pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start" && \
     sleep 2 && \
-    psql -U postgres -f /tmp/init-minimal.sql && \
-    pg_ctl -D /var/lib/postgresql/data stop
+    su postgres -c "psql -U postgres -f /tmp/init-minimal.sql" && \
+    su postgres -c "pg_ctl -D /var/lib/postgresql/data stop"
 
 COPY --from=go-builder /app/auth-server /app/project-manager /app/db-proxy /app/storage /app/sql-editor /app/edge-functions /usr/local/bin/
 COPY services/ai-assistant /app/ai-assistant
