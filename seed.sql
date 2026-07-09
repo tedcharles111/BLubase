@@ -205,6 +205,7 @@ ALTER TABLE platform_users ADD COLUMN IF NOT EXISTS badge_ambassador_expiry TIME
 ALTER TABLE platform_users ADD COLUMN IF NOT EXISTS earnings NUMERIC DEFAULT 0;
 ALTER TABLE platform_users ADD COLUMN IF NOT EXISTS app_uploads_count INT DEFAULT 0;
 ALTER TABLE platform_users ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMPTZ;
+
 INSERT INTO "community_rooms" (created_at, description, icon, id, is_private, name, slug) VALUES ('2026-07-09T17:46:37.27016Z', 'Main hub', 'Globe', [36, 26, 169, 31, 129, 162, 75, 67, 147, 78, 217, 53, 61, 21, 195, 215], false, 'General', 'general') ON CONFLICT DO NOTHING;
 INSERT INTO "community_rooms" (created_at, description, icon, id, is_private, name, slug) VALUES ('2026-07-09T17:46:37.27016Z', 'Show off builds', 'Rocket', [188, 102, 9, 130, 11, 45, 79, 183, 183, 11, 123, 207, 230, 231, 96, 83], false, 'Showcase', 'showcase') ON CONFLICT DO NOTHING;
 INSERT INTO "community_rooms" (created_at, description, icon, id, is_private, name, slug) VALUES ('2026-07-09T17:46:37.27016Z', 'Get help', 'HelpCircle', [35, 89, 178, 65, 69, 183, 75, 246, 133, 201, 11, 167, 213, 196, 112, 226], false, 'Help', 'help') ON CONFLICT DO NOTHING;

@@ -37,8 +37,8 @@ RUN apk add --no-cache supervisor nginx curl postgresql postgresql-contrib redis
 RUN mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql
 USER postgres
 RUN initdb -D /var/lib/postgresql/data --encoding=UTF8 --lc-collate=C --lc-ctype=C
-# Set minimal configuration (shared buffers = 64 KB, max connections = 5)
-    echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
+# Set minimal but valid configuration
+RUN echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "log_statement = 'none'" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "fsync = off" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "synchronous_commit = off" >> /var/lib/postgresql/data/postgresql.conf && \
@@ -60,8 +60,11 @@ COPY services/postgres/init-minimal.sql /app/init-minimal.sql
 RUN pip3 install --break-system-packages -r /app/ai-assistant/requirements.txt
 COPY nginx/default.conf /etc/nginx/http.d/default.conf
 COPY supervisord.conf /etc/supervisor/supervisord.conf
-EXPOSE 10000
-CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+
+# ---------- Immortal database restore ----------
 COPY seed.sql /app/seed.sql
 COPY restore-db.sh /app/restore-db.sh
 RUN chmod +x /app/restore-db.sh
+
+EXPOSE 10000
+CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
