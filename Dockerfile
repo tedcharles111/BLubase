@@ -32,18 +32,36 @@ RUN cd services/edge-functions && rm -f go.mod go.sum \
 
 FROM alpine:3.19
 RUN apk add --no-cache supervisor nginx curl postgresql postgresql-contrib redis python3 py3-pip
-RUN mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql
-RUN su postgres -c "initdb -D /var/lib/postgresql/data"
-RUN su postgres -c "pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start" && \
-    su postgres -c "psql -c \"ALTER USER postgres PASSWORD 'postgres';\"" && \
-    su postgres -c "psql -c \"CREATE USER blubase WITH PASSWORD 'blubase';\"" && \
-    su postgres -c "psql -c \"CREATE DATABASE blubase OWNER blubase;\"" && \
-    su postgres -c "pg_ctl -D /var/lib/postgresql/data stop"
 
+# ---------- PostgreSQL minimal init ----------
+RUN mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql
+USER postgres
+RUN initdb -D /var/lib/postgresql/data --encoding=UTF8 --lc-collate=C --lc-ctype=C
+# Set minimal configuration (shared buffers = 64 KB, max connections = 5)
+RUN echo "shared_buffers = 64kB" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "log_statement = 'none'" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "fsync = off" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "synchronous_commit = off" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "full_page_writes = off" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "max_wal_size = 1MB" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "min_wal_size = 80kB" >> /var/lib/postgresql/data/postgresql.conf
+
+# Start postgres, create the user and database, stop it
+RUN pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start && \
+    sleep 2 && \
+    psql -U postgres -f /app/init-minimal.sql && \
+    pg_ctl -D /var/lib/postgresql/data stop
+
+USER root
 COPY --from=go-builder /app/auth-server /app/project-manager /app/db-proxy /app/storage /app/sql-editor /app/edge-functions /usr/local/bin/
 COPY services/ai-assistant /app/ai-assistant
+COPY services/postgres/init-minimal.sql /app/init-minimal.sql
 RUN pip3 install --break-system-packages -r /app/ai-assistant/requirements.txt
 COPY nginx/default.conf /etc/nginx/http.d/default.conf
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 EXPOSE 10000
 CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+COPY seed.sql /app/seed.sql
+COPY restore-db.sh /app/restore-db.sh
+RUN chmod +x /app/restore-db.sh
