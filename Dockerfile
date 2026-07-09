@@ -44,8 +44,8 @@ RUN echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "synchronous_commit = off" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "full_page_writes = off" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "shared_buffers = 128kB" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "max_wal_size = 2MB" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "min_wal_size = 2MB" >> /var/lib/postgresql/data/postgresql.conf
+    echo "max_wal_size = 64MB" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "min_wal_size = 32MB" >> /var/lib/postgresql/data/postgresql.conf
 
 # Start postgres, create the user and database, stop it
 RUN pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start && \
