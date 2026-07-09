@@ -47,7 +47,9 @@ RUN echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "max_wal_size = 64MB" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "min_wal_size = 32MB" >> /var/lib/postgresql/data/postgresql.conf
 
+COPY services/postgres/init-minimal.sql /app/init-minimal.sql
 # Start postgres, create the user and database, stop it
+    chown postgres:postgres /app/init-minimal.sql &&
 RUN pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start && \
     sleep 2 && \
     psql -U postgres -f /app/init-minimal.sql && \
@@ -56,7 +58,6 @@ RUN pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start && \
 USER root
 COPY --from=go-builder /app/auth-server /app/project-manager /app/db-proxy /app/storage /app/sql-editor /app/edge-functions /usr/local/bin/
 COPY services/ai-assistant /app/ai-assistant
-COPY services/postgres/init-minimal.sql /app/init-minimal.sql
 RUN pip3 install --break-system-packages -r /app/ai-assistant/requirements.txt
 COPY nginx/default.conf /etc/nginx/http.d/default.conf
 COPY supervisord.conf /etc/supervisor/supervisord.conf
