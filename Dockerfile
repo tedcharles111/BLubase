@@ -37,7 +37,6 @@ RUN apk add --no-cache supervisor nginx curl postgresql postgresql-contrib redis
 RUN mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql
 USER postgres
 RUN initdb -D /var/lib/postgresql/data --encoding=UTF8 --lc-collate=C --lc-ctype=C
-# Set minimal but valid configuration
 RUN echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "log_statement = 'none'" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "fsync = off" >> /var/lib/postgresql/data/postgresql.conf && \
@@ -47,15 +46,14 @@ RUN echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "max_wal_size = 64MB" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "min_wal_size = 32MB" >> /var/lib/postgresql/data/postgresql.conf
 
-COPY services/postgres/init-minimal.sql /app/init-minimal.sql
-# Start postgres, create the user and database, stop it
-    chown postgres:postgres /app/init-minimal.sql &&
+USER root
+# Copy the init SQL file and run it while postgres is temporarily running
+COPY services/postgres/init-minimal.sql /tmp/init-minimal.sql
 RUN pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start && \
     sleep 2 && \
-    psql -U postgres -f /app/init-minimal.sql && \
+    psql -U postgres -f /tmp/init-minimal.sql && \
     pg_ctl -D /var/lib/postgresql/data stop
 
-USER root
 COPY --from=go-builder /app/auth-server /app/project-manager /app/db-proxy /app/storage /app/sql-editor /app/edge-functions /usr/local/bin/
 COPY services/ai-assistant /app/ai-assistant
 RUN pip3 install --break-system-packages -r /app/ai-assistant/requirements.txt
