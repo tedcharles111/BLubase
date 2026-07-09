@@ -62,8 +62,9 @@ COPY supervisord.conf /etc/supervisor/supervisord.conf
 
 # ---------- Immortal database restore ----------
 COPY seed.sql /app/seed.sql
+COPY start.sh /app/start.sh
 COPY restore-db.sh /app/restore-db.sh
 RUN chmod +x /app/restore-db.sh
 
 EXPOSE 10000
-CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+CMD ["/app/start.sh"]
