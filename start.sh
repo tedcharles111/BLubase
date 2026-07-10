@@ -30,3 +30,4 @@ echo "Checking database state..."
 
 # Launch all other services via supervisord
 exec supervisord -c /etc/supervisor/supervisord.conf
+echo "log_min_messages = error" >> /var/lib/postgresql/data/postgresql.conf
