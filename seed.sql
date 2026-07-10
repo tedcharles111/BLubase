@@ -205,15 +205,14 @@ ALTER TABLE platform_users ADD COLUMN IF NOT EXISTS badge_ambassador_expiry TIME
 ALTER TABLE platform_users ADD COLUMN IF NOT EXISTS earnings NUMERIC DEFAULT 0;
 ALTER TABLE platform_users ADD COLUMN IF NOT EXISTS app_uploads_count INT DEFAULT 0;
 ALTER TABLE platform_users ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMPTZ;
-
--- Essential data (use proper UUIDs)
+-- Dev user (hashed password)
 INSERT INTO platform_users (id, email, password_hash, username, is_admin, status, tier)
-VALUES ('25a01526-ca8a-47a3-b8c1-2648c43451b9',
-        'dev@blubase.dev',
-        '$2b$12$sXbAWT.k9RSwNKkA19sbcOcx.weSs5DcwGdoswHCT5MRaos43E3XO',
-        'dev', true, 'active', 'free')
+VALUES ('25a01526-ca8a-47a3-b8c1-2648c43451b9', 'dev@blubase.dev',
+'$2b$12$sXbAWT.k9RSwNKkA19sbcOcx.weSs5DcwGdoswHCT5MRaos43E3XO',
+'dev', true, 'active', 'free')
 ON CONFLICT (email) DO NOTHING;
 
+-- Mistral keys (these are already public in your Blubase code, so they are safe)
 INSERT INTO system_config (id, config) VALUES
 ('mistral_keys', '["bnXRKcksJSDzVBl6lWYM6LVeL7XKFZ0e", "7Y9YTSfAfqL4MEHL6YHPH5BEOlONfVU2", "qHABo8b8mSk52hTjfYZvRGY6Z5u5dkXj"]')
 ON CONFLICT (id) DO NOTHING;
