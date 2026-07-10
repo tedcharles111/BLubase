@@ -7,12 +7,13 @@ services:
       name: blubase-pgdata
       mountPath: /var/lib/postgresql/data
       sizeGB: 1
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         value: postgresql://blubase:blubase_secret@127.0.0.1:5432/blubase_control
-      - key: JWT_SECRET
-        value: change-me-in-production
-      - key: MISTRAL_API_KEY
-        value: bnXRKcksJSDzVBl6lWYM6LVeL7XKFZ0e
       - key: REDIS_URL
         value: redis://127.0.0.1:6379
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MISTRAL_API_KEY
+        value: bnXRKcksJSDzVBl6lWYM6LVeL7XKFZ0e
