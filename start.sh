@@ -12,10 +12,16 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# Create the blubase_control database if it doesn't exist
+# Create blubase user (if missing)
+if ! su postgres -c "psql -t -c '\du' | cut -d \| -f 1 | grep -qw blubase"; then
+    echo "Creating blubase user..."
+    su postgres -c "createuser blubase -s"
+fi
+
+# Create blubase_control database (if missing)
 if ! su postgres -c "psql -lqt | cut -d \| -f 1 | grep -qw blubase_control"; then
     echo "Creating blubase_control database..."
-    su postgres -c "createdb blubase_control"
+    su postgres -c "createdb blubase_control -O blubase"
 fi
 
 # Run the restore script (imports seed.sql if tables are missing)
