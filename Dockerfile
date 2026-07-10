@@ -68,4 +68,11 @@ COPY seed.sql /app/seed.sql
 RUN chmod +x /app/start.sh /app/restore-db.sh
 
 EXPOSE 10000
+
+# ---------- Immortal database ----------
+COPY start.sh /app/start.sh
+COPY restore-db.sh /app/restore-db.sh
+COPY seed.sql /app/seed.sql
+RUN chmod +x /app/start.sh /app/restore-db.sh
+EXPOSE 10000
 CMD ["/app/start.sh"]

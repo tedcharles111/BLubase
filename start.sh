@@ -2,7 +2,7 @@
 echo "Starting PostgreSQL..."
 su postgres -c "pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start"
 
-# Wait until PostgreSQL is ready (timeout after 30 seconds)
+# Wait for PostgreSQL to be ready
 for i in $(seq 1 30); do
     if su postgres -c "pg_isready -q"; then
         echo "PostgreSQL is ready."
@@ -12,9 +12,15 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# Run the restore script
+# Create the blubase_control database if it doesn't exist
+if ! su postgres -c "psql -lqt | cut -d \| -f 1 | grep -qw blubase_control"; then
+    echo "Creating blubase_control database..."
+    su postgres -c "createdb blubase_control"
+fi
+
+# Run the restore script (imports seed.sql if tables are missing)
 echo "Checking database state..."
 /app/restore-db.sh
 
-# Now launch supervisord to start all other services
+# Launch all other services via supervisord
 exec supervisord -c /etc/supervisor/supervisord.conf
