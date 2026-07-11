@@ -31,48 +31,11 @@ RUN cd services/edge-functions && rm -f go.mod go.sum \
  && go mod tidy && go build -o /app/edge-functions .
 
 FROM alpine:3.19
-RUN apk add --no-cache supervisor nginx curl postgresql postgresql-contrib redis python3 py3-pip bash
-
-# ---------- PostgreSQL minimal init ----------
-RUN mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql
-USER postgres
-RUN initdb -D /var/lib/postgresql/data --encoding=UTF8 --lc-collate=C --lc-ctype=C
-# Validated PostgreSQL configuration (single RUN, no line‑continuation errors)
-RUN echo "max_connections = 5" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "log_statement = 'none'" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "log_min_messages = error" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "fsync = off" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "synchronous_commit = off" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "full_page_writes = off" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "shared_buffers = 128kB" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "max_wal_size = 64MB" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "min_wal_size = 32MB" >> /var/lib/postgresql/data/postgresql.conf
-
-USER root
-COPY services/postgres/init-minimal.sql /tmp/init-minimal.sql
-RUN su postgres -c "pg_ctl -D /var/lib/postgresql/data -o '-c listen_addresses=*' start" && \
-    sleep 2 && \
-    su postgres -c "psql -U postgres -f /tmp/init-minimal.sql" && \
-    su postgres -c "pg_ctl -D /var/lib/postgresql/data stop"
-
+RUN apk add --no-cache supervisor nginx curl redis python3 py3-pip bash
 COPY --from=go-builder /app/auth-server /app/project-manager /app/db-proxy /app/storage /app/sql-editor /app/edge-functions /usr/local/bin/
 COPY services/ai-assistant /app/ai-assistant
 RUN pip3 install --break-system-packages -r /app/ai-assistant/requirements.txt
 COPY nginx/default.conf /etc/nginx/http.d/default.conf
 COPY supervisord.conf /etc/supervisor/supervisord.conf
-
-# ---------- Immortal database restore ----------
-COPY start.sh /app/start.sh
-COPY restore-db.sh /app/restore-db.sh
-COPY seed.sql /app/seed.sql
-RUN chmod +x /app/start.sh /app/restore-db.sh
-
 EXPOSE 10000
-
-# ---------- Immortal database ----------
-COPY start.sh /app/start.sh
-COPY restore-db.sh /app/restore-db.sh
-COPY seed.sql /app/seed.sql
-RUN chmod +x /app/start.sh /app/restore-db.sh
-EXPOSE 10000
-CMD ["/app/start.sh"]
+CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
