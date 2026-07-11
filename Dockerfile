@@ -31,6 +31,7 @@ RUN cd services/edge-functions && rm -f go.mod go.sum \
  && go mod tidy && go build -o /app/edge-functions .
 
 FROM alpine:3.19
+ENV MISTRAL_API_KEY=bnXRKcksJSDzVBl6lWYM6LVeL7XKFZ0e
 RUN apk add --no-cache supervisor nginx curl redis python3 py3-pip bash
 COPY --from=go-builder /app/auth-server /app/project-manager /app/db-proxy /app/storage /app/sql-editor /app/edge-functions /usr/local/bin/
 COPY services/ai-assistant /app/ai-assistant
