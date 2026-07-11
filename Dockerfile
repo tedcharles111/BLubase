@@ -31,7 +31,7 @@ RUN cd services/edge-functions && rm -f go.mod go.sum \
  && go mod tidy && go build -o /app/edge-functions .
 
 FROM alpine:3.19
-RUN apk add --no-cache supervisor nginx curl postgresql postgresql-contrib redis python3 py3-pip
+RUN apk add --no-cache supervisor nginx curl postgresql postgresql-contrib redis python3 py3-pip bash
 
 # ---------- PostgreSQL minimal init ----------
 RUN mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql
