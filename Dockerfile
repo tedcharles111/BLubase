@@ -35,6 +35,7 @@ ENV MISTRAL_API_KEY=bnXRKcksJSDzVBl6lWYM6LVeL7XKFZ0e
 RUN apk add --no-cache supervisor nginx curl redis python3 py3-pip bash
 COPY --from=go-builder /app/auth-server /app/project-manager /app/db-proxy /app/storage /app/sql-editor /app/edge-functions /usr/local/bin/
 COPY services/ai-assistant /app/ai-assistant
+RUN mkdir -p /app/ai-assistant/logs && chmod 777 /app/ai-assistant/logs
 RUN pip3 install --break-system-packages -r /app/ai-assistant/requirements.txt
 COPY nginx/default.conf /etc/nginx/http.d/default.conf
 COPY supervisord.conf /etc/supervisor/supervisord.conf
