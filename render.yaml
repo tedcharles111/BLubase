@@ -17,3 +17,6 @@ services:
         generateValue: true
       - key: MISTRAL_API_KEY
         value: bnXRKcksJSDzVBl6lWYM6LVeL7XKFZ0e
+envVars:
+  - key: MISTRAL_API_KEY
+    value: bnXRKcksJSDzVBl6lWYM6LVeL7XKFZ0e
