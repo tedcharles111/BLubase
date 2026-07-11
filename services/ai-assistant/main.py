@@ -1,21 +1,21 @@
 import os, sys, traceback, json, urllib.parse
 
-# Redirect all errors to a log file
-import logging
-logging.basicConfig(filename='/app/ai-assistant/error.log', level=logging.ERROR,
-                    format='%(asctime)s %(levelname)s: %(message)s')
+def log_error(msg):
+    print(msg, file=sys.stderr)
+    with open("/app/ai-assistant/last_error.log", "a") as f:
+        f.write(msg + "\n")
 
 try:
     from fastapi import FastAPI, Request
     from fastapi.responses import JSONResponse
     import httpx
 except Exception as e:
-    logging.error(f"Failed to import required modules: {e}")
+    log_error(f"ImportError: {e}\n{traceback.format_exc()}")
     sys.exit(2)
 
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 if not MISTRAL_API_KEY:
-    logging.error("MISTRAL_API_KEY environment variable is not set.")
+    log_error("FATAL: MISTRAL_API_KEY environment variable is not set.")
     sys.exit(2)
 
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
@@ -45,9 +45,19 @@ async def assist(request: Request):
             reply = result["choices"][0]["message"]["content"]
             return JSONResponse({"response": reply})
     except Exception as e:
-        logging.error(f"Error calling Mistral: {e}")
+        log_error(f"Mistral API error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=3006)
+
+# Diagnostic endpoint
+@app.get("/error-log")
+async def get_error_log():
+    try:
+        with open("/app/ai-assistant/last_error.log", "r") as f:
+            content = f.read()
+        return JSONResponse({"log": content})
+    except FileNotFoundError:
+        return JSONResponse({"log": "No errors yet."})
