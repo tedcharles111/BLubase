@@ -6,3 +6,6 @@ infrastructure/pgdata
 infrastructure/minio_data
 dashboard/node_modules
 dashboard/dist
+
+# Local Netlify folder
+.netlify
