@@ -1,7 +1,6 @@
 package main
 
 import (
-    "strings"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -24,22 +23,6 @@ var (
 	jwtSignKey = []byte(os.Getenv("JWT_SECRET"))
 )
 
-func anonKeyMiddleware(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        token := r.Header.Get("Authorization")
-        if token != "" && strings.HasPrefix(token, "Bearer ") {
-            token = token[7:]
-            var projectRef string
-            err := controlDB.QueryRow(context.Background(), "SELECT ref FROM projects WHERE anon_key=$1", token).Scan(&projectRef)
-            if err == nil {
-                ctx := context.WithValue(r.Context(), "projectRef", projectRef)
-                ctx = context.WithValue(ctx, "role", "anon")
-                r = r.WithContext(ctx)
-            }
-        }
-        next.ServeHTTP(w, r)
-    })
-}
 func main() {
 	var err error
 	controlDB, err = pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
@@ -86,18 +69,6 @@ func getProjectRef(r *http.Request) string {
 }
 
 func createProjectHandler(w http.ResponseWriter, r *http.Request) {
-func getUserID(r *http.Request) (string, error) {
-    projectRef := r.Context().Value("projectRef")
-    if projectRef != nil {
-        // Anon key used – return owner of the project
-        var ownerID string
-        err := controlDB.QueryRow(context.Background(), "SELECT owner_id FROM projects WHERE ref=$1", projectRef.(string)).Scan(&ownerID)
-        return ownerID, err
-    }
-    // Fallback to JWT
-    claims := r.Context().Value("claims").(jwt.MapClaims)
-    return claims["sub"].(string), nil
-}
 	userID := extractUserID(r)
 	if userID == "" {
 		http.Error(w, `{"error":"unauthorized"}`, 401)
