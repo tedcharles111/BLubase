@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -47,6 +46,7 @@ func main() {
 	}
 
 	r := chi.NewRouter()
+    r.Use(anonKeyMiddleware)
     r.Use(anonKeyMiddleware)
 	r.Post("/projects", createProjectHandler)
 	r.Get("/projects", listProjectsHandler)
