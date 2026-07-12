@@ -5,7 +5,6 @@ import (
     "io"
     "log"
     "net/http"
-    "os/exec"
 
     "github.com/go-chi/chi/v5"
 )
@@ -19,6 +18,7 @@ func main() {
 
     // Invoke a deployed function by name
     r.Post("/invoke/{name}", func(w http.ResponseWriter, r *http.Request) {
+        name := chi.URLParam(r, "name")
         body, _ := io.ReadAll(r.Body)
         // For now, just echo back the name and code length (Deno not installed, but you can add it later)
         msg := fmt.Sprintf("Invoked %s with %d bytes of code", name, len(body))
