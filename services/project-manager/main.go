@@ -69,6 +69,18 @@ func getProjectRef(r *http.Request) string {
 }
 
 func createProjectHandler(w http.ResponseWriter, r *http.Request) {
+func getUserID(r *http.Request) (string, error) {
+    projectRef := r.Context().Value("projectRef")
+    if projectRef != nil {
+        // Anon key used – return owner of the project
+        var ownerID string
+        err := controlDB.QueryRow(context.Background(), "SELECT owner_id FROM projects WHERE ref=$1", projectRef.(string)).Scan(&ownerID)
+        return ownerID, err
+    }
+    // Fallback to JWT
+    claims := r.Context().Value("claims").(jwt.MapClaims)
+    return claims["sub"].(string), nil
+}
 	userID := extractUserID(r)
 	if userID == "" {
 		http.Error(w, `{"error":"unauthorized"}`, 401)
