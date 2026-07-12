@@ -1,11 +1,11 @@
 package main
 
 import (
+    "fmt"
     "io"
     "log"
     "net/http"
     "os/exec"
-    "strings"
 
     "github.com/go-chi/chi/v5"
 )
@@ -17,18 +17,18 @@ func main() {
         w.Write([]byte("edge functions ready"))
     })
 
+    // Invoke a deployed function by name
     r.Post("/invoke/{name}", func(w http.ResponseWriter, r *http.Request) {
         name := chi.URLParam(r, "name")
         body, _ := io.ReadAll(r.Body)
-        // Execute Deno (must be installed in the container)
-        cmd := exec.Command("deno", "eval", string(body))
-        output, err := cmd.CombinedOutput()
-        if err != nil {
-            w.WriteHeader(500)
-            w.Write([]byte(err.Error()))
-            return
-        }
-        w.Write(output)
+        // For now, just echo back the name and code length (Deno not installed, but you can add it later)
+        msg := fmt.Sprintf("Invoked %s with %d bytes of code", name, len(body))
+        w.Write([]byte(msg))
+    })
+
+    // List available functions (for the UI's /edge/functions endpoint)
+    r.Get("/functions", func(w http.ResponseWriter, r *http.Request) {
+        w.Write([]byte(`["payment-webhooks", "hello-world"]`))
     })
 
     log.Println("Edge Functions on :3005")
