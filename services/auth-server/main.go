@@ -120,27 +120,31 @@ func ensureAdminUser(db *pgxpool.Pool) {
 
 // ---------- Signup / Login ----------
 func signupHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-		Phone    string `json:"phone"`
-	}
-	json.NewDecoder(r.Body).Decode(&req)
-	if req.Email == "" || req.Password == "" {
-		http.Error(w, `{"error":"email and password required"}`, 400)
-		return
-	}
-	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	_, err := dbPool.Exec(context.Background(),
-		`INSERT INTO platform_users (email, password_hash, phone) VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING`,
-		req.Email, string(hashed), req.Phone)
-	if err != nil {
-		http.Error(w, `{"error":"database error"}`, 500)
-		return
-	}
-	w.Write([]byte(`{"message":"signup successful"}`))
+    var req struct {
+        Email    string `json:"email"`
+        Password string `json:"password"`
+        Phone    string `json:"phone"`
+    }
+    json.NewDecoder(r.Body).Decode(&req)
+    if req.Email == "" || req.Password == "" {
+        http.Error(w, `{"error":"email and password required"}`, 400)
+        return
+    }
+    hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+    var userID string
+    err := dbPool.QueryRow(context.Background(),
+        `INSERT INTO platform_users (email, password_hash, phone) VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING RETURNING id::text`,
+        req.Email, string(hashed), req.Phone).Scan(&userID)
+    if err != nil {
+        http.Error(w, `{"error":"database error"}`, 500)
+        return
+    }
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "id":      userID,
+        "email":   req.Email,
+        "message": "signup successful",
+    })
 }
-
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email    string `json:"email"`
