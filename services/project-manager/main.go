@@ -1,6 +1,7 @@
 package main
 
 import (
+    "strings"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -23,6 +24,21 @@ var (
 	jwtSignKey = []byte(os.Getenv("JWT_SECRET"))
 )
 
+func anonKeyMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        token := r.Header.Get("Authorization")
+        if token != "" && strings.HasPrefix(token, "Bearer ") {
+            token = token[7:]
+            var projectRef string
+            err := controlDB.QueryRow(context.Background(), "SELECT ref FROM projects WHERE anon_key=$1", token).Scan(&projectRef)
+            if err == nil {
+                ctx := context.WithValue(r.Context(), "projectRef", projectRef)
+                r = r.WithContext(ctx)
+            }
+        }
+        next.ServeHTTP(w, r)
+    })
+}
 func main() {
 	var err error
 	controlDB, err = pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
@@ -31,6 +47,7 @@ func main() {
 	}
 
 	r := chi.NewRouter()
+    r.Use(anonKeyMiddleware)
 	r.Post("/projects", createProjectHandler)
 	r.Get("/projects", listProjectsHandler)
 	r.Get("/projects/{ref}/users", listProjectUsersHandler)
