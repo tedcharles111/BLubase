@@ -86,10 +86,23 @@ func getProjectRef(r *http.Request) string {
 }
 
 func createProjectHandler(w http.ResponseWriter, r *http.Request) {
-	userID := extractUserID(r)
-	if userID == "" {
-		http.Error(w, `{"error":"unauthorized"}`, 401)
-		return
+	var userID string
+	// 1) Try anon key (master API key)
+	if token := r.Header.Get("Authorization"); strings.HasPrefix(token, "Bearer ") {
+		token = token[7:]
+		err := controlDB.QueryRow(context.Background(),
+			"SELECT owner_id FROM projects WHERE anon_key=$1", token).Scan(&userID)
+		if err != nil {
+			http.Error(w, `{"error":"unauthorized"}`, 401)
+			return
+		}
+	} else {
+		// 2) Fall back to JWT
+		userID = extractUserID(r)
+		if userID == "" {
+			http.Error(w, `{"error":"unauthorized"}`, 401)
+			return
+		}
 	}
 	var req struct{ Name string }
 	json.NewDecoder(r.Body).Decode(&req)
