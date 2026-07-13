@@ -268,13 +268,18 @@ func projectSignupHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
-	// Fetch the new user ID and return it
 	var newUserID string
-	controlDB.QueryRow(context.Background(), `SELECT id::text FROM `+tableName+` WHERE email=$1`, req.Email).Scan(&newUserID)
-	w.Write([]byte(`{"message":"signup successful","userId":"` + newUserID + `"}`))
-}
-
-func projectLoginHandler(w http.ResponseWriter, r *http.Request) {
+	err = controlDB.QueryRow(context.Background(), `SELECT id::text FROM `+tableName+` WHERE email=$1`, req.Email).Scan(&newUserID)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":      newUserID,
+		"userId":  newUserID,
+		"message": "signup successful",
+	})
+}func projectLoginHandler(w http.ResponseWriter, r *http.Request) {
 	ref := getProjectRef(r)
 	tableName := fmt.Sprintf("project_%s_users", ref)
 	var req struct {
@@ -299,5 +304,9 @@ func projectLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := token.SignedString(jwtSignKey)
-	json.NewEncoder(w).Encode(map[string]interface{}{"id": userID, "token": signed, "userId": userID})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":     userID,
+		"token":  signed,
+		"userId": userID,
+	})
 }
