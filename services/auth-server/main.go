@@ -152,6 +152,11 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 func loginHandler(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "ref")
+	table := "platform_users"
+	if ref != "" {
+		table = fmt.Sprintf("project_%s_users", ref)
+	}
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -164,7 +169,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	var userID string
 	var hashed string
 	err := dbPool.QueryRow(context.Background(),
-		`SELECT id::text, password_hash FROM platform_users WHERE email=$1`, req.Email).Scan(&userID, &hashed)
+		fmt.Sprintf(`SELECT id::text, password_hash FROM %s WHERE email=$1`, table), req.Email).Scan(&userID, &hashed)
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(hashed), []byte(req.Password)) != nil {
 		http.Error(w, `{"error":"invalid credentials"}`, 401)
 		return
@@ -178,13 +183,11 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := token.SignedString(jwtSecret)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-        "id":    userID,
-        "token": signed,
-        "email": req.Email,
-    })
+		"id":     userID,
+		"token":  signed,
+		"userId": userID,
+	})
 }
-
-// ---------- OAuth Handlers (real) ----------
 func googleLoginHandler(w http.ResponseWriter, r *http.Request) {
 	url := oauthConfigs["google"].AuthCodeURL("state")
 	http.Redirect(w, r, url, http.StatusFound)
