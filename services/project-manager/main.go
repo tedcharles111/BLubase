@@ -47,7 +47,6 @@ func main() {
 
 	r := chi.NewRouter()
     r.Use(anonKeyMiddleware)
-    r.Use(anonKeyMiddleware)
 	r.Post("/projects", createProjectHandler)
 	r.Get("/projects", listProjectsHandler)
 	r.Get("/projects/{ref}/users", listProjectUsersHandler)
@@ -300,5 +299,5 @@ func projectLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := token.SignedString(jwtSignKey)
-	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	json.NewEncoder(w).Encode(map[string]interface{}{"id": userID, "token": signed, "userId": userID})
 }
