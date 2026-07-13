@@ -1,7 +1,6 @@
 package main
 
 import (
-    "strings"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -10,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -23,21 +23,6 @@ var (
 	jwtSignKey = []byte(os.Getenv("JWT_SECRET"))
 )
 
-func anonKeyMiddleware(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        token := r.Header.Get("Authorization")
-        if token != "" && strings.HasPrefix(token, "Bearer ") {
-            token = token[7:]
-            var projectRef string
-            err := controlDB.QueryRow(context.Background(), "SELECT ref FROM projects WHERE anon_key=$1", token).Scan(&projectRef)
-            if err == nil {
-                ctx := context.WithValue(r.Context(), "projectRef", projectRef)
-                r = r.WithContext(ctx)
-            }
-        }
-        next.ServeHTTP(w, r)
-    })
-}
 func main() {
 	var err error
 	controlDB, err = pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
@@ -46,7 +31,6 @@ func main() {
 	}
 
 	r := chi.NewRouter()
-    r.Use(anonKeyMiddleware)
 	r.Post("/projects", createProjectHandler)
 	r.Get("/projects", listProjectsHandler)
 	r.Get("/projects/{ref}/users", listProjectUsersHandler)
@@ -85,23 +69,10 @@ func getProjectRef(r *http.Request) string {
 }
 
 func createProjectHandler(w http.ResponseWriter, r *http.Request) {
-	var userID string
-	// 1) Try anon key (master API key)
-	if token := r.Header.Get("Authorization"); strings.HasPrefix(token, "Bearer ") {
-		token = token[7:]
-		err := controlDB.QueryRow(context.Background(),
-			"SELECT owner_id FROM projects WHERE anon_key=$1", token).Scan(&userID)
-		if err != nil {
-			http.Error(w, `{"error":"unauthorized"}`, 401)
-			return
-		}
-	} else {
-		// 2) Fall back to JWT
-		userID = extractUserID(r)
-		if userID == "" {
-			http.Error(w, `{"error":"unauthorized"}`, 401)
-			return
-		}
+	userID := extractUserID(r)
+	if userID == "" {
+		http.Error(w, `{"error":"unauthorized"}`, 401)
+		return
 	}
 	var req struct{ Name string }
 	json.NewDecoder(r.Body).Decode(&req)
@@ -242,7 +213,6 @@ func deleteProjectUserHandler(w http.ResponseWriter, r *http.Request) {
 func projectSignupHandler(w http.ResponseWriter, r *http.Request) {
 	ref := getProjectRef(r)
 	tableName := fmt.Sprintf("project_%s_users", ref)
-	// Auto-create table if it doesn't exist
 	_, _ = controlDB.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS `+tableName+` (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		email TEXT UNIQUE,
@@ -268,10 +238,13 @@ func projectSignupHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
 	}
-	// Fetch the new user ID and return it
 	var newUserID string
 	controlDB.QueryRow(context.Background(), `SELECT id::text FROM `+tableName+` WHERE email=$1`, req.Email).Scan(&newUserID)
-	w.Write([]byte(`{"message":"signup successful","userId":"` + newUserID + `"}`))
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":      newUserID,
+		"userId":  newUserID,
+		"message": "signup successful",
+	})
 }
 
 func projectLoginHandler(w http.ResponseWriter, r *http.Request) {
@@ -299,5 +272,9 @@ func projectLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := token.SignedString(jwtSignKey)
-	json.NewEncoder(w).Encode(map[string]interface{}{"id": userID, "id": userID, "token": signed, "userId": userID})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":     userID,
+		"token":  signed,
+		"userId": userID,
+	})
 }
