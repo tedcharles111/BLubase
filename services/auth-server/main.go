@@ -120,6 +120,11 @@ func ensureAdminUser(db *pgxpool.Pool) {
 
 // ---------- Signup / Login ----------
 func signupHandler(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "ref")
+	table := "platform_users"
+	if ref != "" {
+		table = fmt.Sprintf("project_%s_users", ref)
+	}
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -133,7 +138,7 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	var userID string
 	err := dbPool.QueryRow(context.Background(),
-		`INSERT INTO platform_users (email, password_hash, phone) VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING RETURNING id::text`,
+		fmt.Sprintf(`INSERT INTO %s (email, password_hash, phone) VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING RETURNING id::text`, table),
 		req.Email, string(hashed), req.Phone).Scan(&userID)
 	if err != nil {
 		http.Error(w, `{"error":"database error"}`, 500)
