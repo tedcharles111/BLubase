@@ -171,7 +171,11 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := token.SignedString(jwtSecret)
-	json.NewEncoder(w).Encode(map[string]interface{}{"token": signed, "userId": userID})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+        "id":    userID,
+        "token": signed,
+        "email": req.Email,
+    })
 }
 
 // ---------- OAuth Handlers (real) ----------
